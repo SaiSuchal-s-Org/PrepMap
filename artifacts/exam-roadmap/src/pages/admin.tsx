@@ -5,6 +5,7 @@ import {
   useDeleteConfig,
   useGetAppMetadata,
   useGetLiveConfigQuestionBankInteractionSummary,
+  useGetServerCacheStats,
   useGetUniversityAnalytics,
   useGetConfigStudentProgress,
   useGetQuestionBank,
@@ -1322,9 +1323,39 @@ function AnalyticsTab() {
     isLoading: configsLoading,
     isError: configsError,
     error: configsErrorDetails,
-  } = useGetConfigs({}, { query: { queryKey: ["configs", "all"] } });
-  const { data: liveConfigQbSummary } = useGetLiveConfigQuestionBankInteractionSummary();
-  const { data: universityAnalytics } = useGetUniversityAnalytics();
+  } = useGetConfigs({}, {
+    query: {
+      queryKey: ["configs", "all"],
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    },
+  });
+  const { data: liveConfigQbSummary } = useGetLiveConfigQuestionBankInteractionSummary({
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+  const {
+    data: cacheStatsData,
+    isLoading: cacheStatsLoading,
+    refetch: refetchCacheStats,
+    isFetching: cacheStatsFetching,
+  } = useGetServerCacheStats({
+    refetchInterval: 30000,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+  });
+  const { data: universityAnalytics } = useGetUniversityAnalytics({
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const allConfigsSafe = useMemo(() => allConfigs ?? [], [allConfigs]);
   const studentCountByUniversity = useMemo(() => {
     const map = new Map<string, number>();
@@ -1471,9 +1502,20 @@ function AnalyticsTab() {
     return map;
   }, [liveConfigQbSummary]);
   const { data: studentProgress, isLoading: studentsLoading } = useGetConfigStudentProgress(
-    selectedConfigId
+    selectedConfigId,
+    {
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    }
   );
-  const { data: selectedConfigQuestionBank } = useGetQuestionBank(selectedConfigId);
+  const { data: selectedConfigQuestionBank } = useGetQuestionBank(selectedConfigId, {
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const ratingOrder = ["Poor", "Average", "Good"] as const;
   const ratingTileOrder = ["Good", "Average", "Poor"] as const;
   type RatingBucket = (typeof ratingOrder)[number];
@@ -1520,6 +1562,10 @@ function AnalyticsTab() {
     }
     return counts;
   }, [studentProgress, selectedConfigQuestionBank]);
+  const cacheStats = cacheStatsData?.cache;
+  const cacheTotalLookups = (cacheStats?.hit ?? 0) + (cacheStats?.miss ?? 0);
+  const cacheHitRate =
+    cacheTotalLookups > 0 ? Math.round(((cacheStats?.hit ?? 0) / cacheTotalLookups) * 100) : 0;
   const selectedConfigSubtopicRatingPercents = useMemo(() => {
     const total = studentProgress?.students.length ?? 0;
     const toPercent = (count: number) => (total > 0 ? Math.round((count / total) * 100) : 0);
@@ -1587,6 +1633,46 @@ function AnalyticsTab() {
 
   return (
     <div>
+      <div className="mb-6 rounded-2xl border border-border bg-card p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Server Cache</h3>
+            <p className="text-xs text-muted-foreground">Auto-refresh every 30s</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refetchCacheStats()}
+            disabled={cacheStatsFetching}
+          >
+            {cacheStatsFetching ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-lg border border-border bg-secondary/20 p-3">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Hit Rate</p>
+            <p className="text-lg font-semibold text-foreground">{cacheStatsLoading ? "-" : `${cacheHitRate}%`}</p>
+          </div>
+          <div className="rounded-lg border border-border bg-secondary/20 p-3">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Cache Size</p>
+            <p className="text-lg font-semibold text-foreground">{cacheStatsLoading ? "-" : (cacheStats?.size ?? 0)}</p>
+          </div>
+          <div className="rounded-lg border border-border bg-secondary/20 p-3">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Hits / Misses</p>
+            <p className="text-lg font-semibold text-foreground">
+              {cacheStatsLoading ? "-" : `${cacheStats?.hit ?? 0} / ${cacheStats?.miss ?? 0}`}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-secondary/20 p-3">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Set / Del / Sweep</p>
+            <p className="text-lg font-semibold text-foreground">
+              {cacheStatsLoading
+                ? "-"
+                : `${cacheStats?.set ?? 0} / ${cacheStats?.del ?? 0} / ${cacheStats?.sweep ?? 0}`}
+            </p>
+          </div>
+        </div>
+      </div>
       <div className="bg-card rounded-3xl border border-border shadow-lg shadow-black/5 overflow-hidden">
         <div className="px-6 py-5 border-b border-border bg-secondary/30">
           <h2 className="text-lg font-semibold text-foreground">Detailed Analytics By University</h2>

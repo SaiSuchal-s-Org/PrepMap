@@ -157,6 +157,30 @@ export interface LiveConfigQuestionBankInteractionSummaryResponse {
   }>;
 }
 
+export interface ServerCacheStatsResponse {
+  success: boolean;
+  cache: {
+    size: number;
+    hit: number;
+    miss: number;
+    set: number;
+    del: number;
+    sweep: number;
+  };
+}
+
+export interface ConfigsVersionResponse {
+  maxUpdatedAt: string | null;
+  total: number;
+}
+
+export interface ConfigVersionResponse {
+  configId: string;
+  configUpdatedAt: string | null;
+  nodesUpdatedAt: string | null;
+  questionBankUpdatedAt: string | null;
+}
+
 export interface AppMetadataResponse {
   universities: { id: string; name: string }[];
   commonBranch: string;
@@ -488,6 +512,28 @@ export const getLiveConfigQuestionBankInteractionSummary = async (options?: Requ
       method: "GET",
     }
   );
+};
+
+export const getServerCacheStats = async (options?: RequestInit) => {
+  return customFetch<ServerCacheStatsResponse>(`/api/admin/cache-stats`, {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getConfigsVersion = async (universityId?: string | null, options?: RequestInit) => {
+  const query = universityId ? `?universityId=${encodeURIComponent(universityId)}` : "";
+  return customFetch<ConfigsVersionResponse>(`/api/configs/version${query}`, {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getConfigVersion = async (configId: string, options?: RequestInit) => {
+  return customFetch<ConfigVersionResponse>(`/api/configs/${encodeURIComponent(configId)}/version`, {
+    ...options,
+    method: "GET",
+  });
 };
 
 export const getAppMetadata = async (options?: RequestInit) => {
@@ -1023,6 +1069,48 @@ export const useGetLiveConfigQuestionBankInteractionSummary = <
   });
 };
 
+export const useGetServerCacheStats = <
+  TError = ErrorType<unknown>,
+  TData = ServerCacheStatsResponse,
+>(
+  options?: Omit<UseQueryOptions<ServerCacheStatsResponse, TError, TData>, "queryKey" | "queryFn">,
+) => {
+  return useQuery<ServerCacheStatsResponse, TError, TData>({
+    queryKey: ["admin-cache-stats"],
+    queryFn: () => getServerCacheStats(),
+    ...options,
+  });
+};
+
+export const useGetConfigsVersion = <
+  TError = ErrorType<unknown>,
+  TData = ConfigsVersionResponse,
+>(
+  universityId?: string | null,
+  options?: Omit<UseQueryOptions<ConfigsVersionResponse, TError, TData>, "queryKey" | "queryFn">,
+) => {
+  return useQuery<ConfigsVersionResponse, TError, TData>({
+    queryKey: ["configs-version", universityId || ""],
+    queryFn: () => getConfigsVersion(universityId),
+    ...options,
+  });
+};
+
+export const useGetConfigVersion = <
+  TError = ErrorType<unknown>,
+  TData = ConfigVersionResponse,
+>(
+  configId: string | null,
+  options?: Omit<UseQueryOptions<ConfigVersionResponse, TError, TData>, "queryKey" | "queryFn">,
+) => {
+  return useQuery<ConfigVersionResponse, TError, TData>({
+    queryKey: ["config-version", configId || ""],
+    queryFn: () => getConfigVersion(configId!),
+    enabled: !!configId,
+    ...options,
+  });
+};
+
 export const useGetCheapGapReport = <
   TError = ErrorType<unknown>,
   TData = CheapGapReportResponse,
@@ -1047,6 +1135,9 @@ export const useGetAppMetadata = <
   return useQuery<AppMetadataResponse, TError, TData>({
     queryKey: ["app-metadata"],
     queryFn: () => getAppMetadata(),
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
     ...options,
   });
 };
@@ -1254,6 +1345,9 @@ export const useGetQuestionBank = <
     queryKey: ["config-question-bank", configId],
     queryFn: () => getQuestionBank(configId!),
     enabled: !!configId,
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
     ...options,
   });
 };
@@ -1318,6 +1412,8 @@ export const useGetLatestInteractionState = <
     queryKey: ["config-latest-interaction-state", configId],
     queryFn: () => getLatestInteractionState(configId!),
     enabled: !!configId,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
     ...options,
   });
 };
@@ -1333,6 +1429,8 @@ export const useGetCompletionState = <
     queryKey: ["config-completion-state", configId],
     queryFn: () => getCompletionState(configId!),
     enabled: !!configId,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
     ...options,
   });
 };
@@ -1349,6 +1447,9 @@ export const useGetTopicContentBundle = <
     queryKey: ["topic-content-bundle", configId, topicId],
     queryFn: () => getTopicContentBundle(configId!, topicId!),
     enabled: !!configId && !!topicId,
+    staleTime: 24 * 60 * 60 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
     ...options,
   });
 };

@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
+import { useQueryClient } from "@tanstack/react-query";
 import { Building2, Calendar, GraduationCap, BookOpen, ChevronRight, Lock, Sparkles, Zap } from "lucide-react";
 import { UNIVERSITIES, EXAM_TYPES, COMMON_BRANCH, SEMESTERS } from "@/lib/constants";
-import { useGetAppMetadata, useGetConfigs } from "@/api-client";
+import { useGetAppMetadata, useGetConfigs, useGetConfigsVersion } from "@/api-client";
 import { getStoredUser } from "@/lib/auth";
 import {
   Select,
@@ -85,6 +86,7 @@ function normalizeBranchToken(value: string | null | undefined): string {
 
 export default function Home() {
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
   const user = getStoredUser();
   const isStudent = user?.role === "student" || user?.role === "super_student";
   const { data: metadata } = useGetAppMetadata();
@@ -109,8 +111,34 @@ export default function Home() {
   }, [isStudent, selectedUni, universities, user?.universityId]);
 
   const { data: configs, isLoading } = useGetConfigs({ universityId: selectedUni }, {
-    query: { queryKey: ["configs", "home", selectedUni], enabled: !!selectedUni }
+    query: {
+      queryKey: ["configs", "home", selectedUni],
+      enabled: !!selectedUni,
+      staleTime: 5 * 60 * 1000,
+      gcTime: 30 * 60 * 1000,
+      refetchOnWindowFocus: false,
+    }
   });
+  const { data: configsVersion } = useGetConfigsVersion(selectedUni || null, {
+    enabled: !!selectedUni,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 0,
+    gcTime: 5 * 60 * 1000,
+  });
+  const lastConfigsVersionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const next = String(configsVersion?.maxUpdatedAt || "").trim() || null;
+    if (next == null) return;
+    if (lastConfigsVersionRef.current == null) {
+      lastConfigsVersionRef.current = next;
+      return;
+    }
+    if (lastConfigsVersionRef.current !== next) {
+      lastConfigsVersionRef.current = next;
+      void queryClient.invalidateQueries({ queryKey: ["configs", "home", selectedUni] });
+    }
+  }, [configsVersion?.maxUpdatedAt, queryClient, selectedUni]);
 
   const availableSubjects = useMemo(() =>
     Array.from(new Set(

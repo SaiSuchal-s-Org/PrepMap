@@ -189,6 +189,169 @@ router.get("/configs", async (req, res) => {
   }
 });
 
+router.get("/configs/version", async (req, res) => {
+  try {
+    const universityId = String(req.query.universityId || "").trim();
+    const auth = getJwtRequestAuth(req);
+    const userId = auth?.userId || "";
+    if (!userId) {
+      res.status(401).json({ error: "Authentication required. Provide a valid bearer token." });
+      return;
+    }
+
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) {
+      res.status(401).json({ error: "Invalid user." });
+      return;
+    }
+
+    const isAdmin = user?.role === "admin";
+    const isSuperStudent = (user?.role || "").toLowerCase() === "super_student";
+    const conditions: SQL[] = [];
+
+    if (!isAdmin) {
+      conditions.push(eq(configsTable.universityId, user.universityId));
+      if (!isSuperStudent) {
+        const userBatch = String((user as any)?.batch || "").trim() || "2025";
+        conditions.push(eq(configsTable.batch, userBatch));
+        const allowedYearTokens = getAllowedConfigYearTokensForStudentYear(user?.year ?? null);
+        if (allowedYearTokens.length > 0) {
+          const normalizedConfigYear = sql<string>`regexp_replace(lower(${configsTable.year}), '\\s+', '', 'g')`;
+          conditions.push(or(...allowedYearTokens.map((token) => sql`${normalizedConfigYear} = ${token}`)) as SQL);
+        }
+        const normalizedUserBranch = normalizeToken(user?.branch ?? null);
+        if (normalizedUserBranch) {
+          const normalizedConfigBranch = sql<string>`regexp_replace(lower(${configsTable.branch}), '\\s+', '', 'g')`;
+          conditions.push(sql`${normalizedConfigBranch} = ${normalizedUserBranch}`);
+        }
+      }
+      conditions.push(eq(configsTable.status, "live"));
+    } else {
+      if (universityId) conditions.push(eq(configsTable.universityId, universityId));
+      conditions.push(ne(configsTable.status, "deleted"));
+    }
+
+    const rows = await withRequestDbContext(auth.claims, async (tx) =>
+      tx
+        .select({
+          maxUpdatedAt: sql<string | null>`max(${configsTable.updatedAt})`,
+          total: sql<number>`count(*)`,
+        })
+        .from(configsTable)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+    );
+
+    const row = rows[0];
+    res.json({
+      maxUpdatedAt: row?.maxUpdatedAt ?? null,
+      total: Number(row?.total ?? 0),
+    });
+  } catch (error) {
+    req.log.error({ err: error }, "Failed to fetch configs version");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/configs/:id/version", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Config id is required" });
+      return;
+    }
+
+    const auth = getJwtRequestAuth(req);
+    const userId = auth?.userId || "";
+    if (!userId) {
+      res.status(401).json({ error: "Authentication required. Provide a valid bearer token." });
+      return;
+    }
+
+    const [config] = await withRequestDbContext(auth.claims, async (tx) =>
+      tx
+        .select({
+          id: configsTable.id,
+          universityId: configsTable.universityId,
+          batch: configsTable.batch,
+          year: configsTable.year,
+          branch: configsTable.branch,
+          status: configsTable.status,
+          updatedAt: configsTable.updatedAt,
+        })
+        .from(configsTable)
+        .where(eq(configsTable.id, id))
+        .limit(1)
+    );
+    if (!config) {
+      res.status(404).json({ error: "Config not found" });
+      return;
+    }
+
+    const [user] = await withRequestDbContext(auth.claims, async (tx) =>
+      tx
+        .select({
+          id: usersTable.id,
+          role: usersTable.role,
+          universityId: usersTable.universityId,
+          batch: usersTable.batch,
+          year: usersTable.year,
+          branch: usersTable.branch,
+        })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .limit(1)
+    );
+    if (!user) {
+      res.status(401).json({ error: "Invalid user." });
+      return;
+    }
+
+    if (user.role !== "admin") {
+      if (config.status !== "live") {
+        res.status(403).json({ error: "Access denied." });
+        return;
+      }
+      if (user.universityId !== config.universityId) {
+        res.status(403).json({ error: "Access denied." });
+        return;
+      }
+      const isSuperStudent = (user.role || "").toLowerCase() === "super_student";
+      if (!isSuperStudent) {
+        if ((String((user as any).batch || "").trim() || "2025") !== (String((config as any).batch || "").trim() || "2025")) {
+          res.status(403).json({ error: "Access denied." });
+          return;
+        }
+      }
+      const branchMismatch = normalizeToken(user.branch) !== normalizeToken(config.branch);
+      if (!isSuperStudent && (!doesStudentYearMatchConfigYear(user.year, config.year) || branchMismatch)) {
+        res.status(403).json({ error: "Access denied." });
+        return;
+      }
+    }
+
+    const [agg] = await withRequestDbContext(auth.claims, async (tx) =>
+      tx
+        .select({
+          nodesUpdatedAt: sql<string | null>`max(${nodesTable.updatedAt})`,
+          questionBankUpdatedAt: sql<string | null>`max(${configQuestionsTable.updatedAt})`,
+        })
+        .from(nodesTable)
+        .leftJoin(configQuestionsTable, eq(configQuestionsTable.configId, nodesTable.configId))
+        .where(eq(nodesTable.configId, id))
+    );
+
+    res.json({
+      configId: id,
+      configUpdatedAt: config.updatedAt?.toISOString?.() ?? null,
+      nodesUpdatedAt: agg?.nodesUpdatedAt ?? null,
+      questionBankUpdatedAt: agg?.questionBankUpdatedAt ?? null,
+    });
+  } catch (error) {
+    req.log.error({ err: error }, "Failed to fetch config version");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.get("/configs/:id/question-bank", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();

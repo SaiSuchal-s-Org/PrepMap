@@ -9,6 +9,7 @@ import {
 import {
   useGetAppMetadata,
   useGetConfigs,
+  useGetConfigVersion,
   useGetLatestInteractionState,
   useGetCompletionState,
   useGetNodes,
@@ -666,6 +667,7 @@ function pruneTreeForCollapsedTopics(
 
 export default function Roadmap() {
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
   const searchParams = new URLSearchParams(window.location.search);
   const configId = searchParams.get("configId");
   const subject = searchParams.get("subject") || "Roadmap";
@@ -720,6 +722,39 @@ export default function Roadmap() {
       },
     }
   );
+  const { data: configVersion } = useGetConfigVersion(isConfigReady ? configId : null, {
+    enabled: isConfigReady,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 0,
+    gcTime: 5 * 60 * 1000,
+  });
+  const lastConfigVersionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const parts = [
+      String(configVersion?.configUpdatedAt || "").trim(),
+      String(configVersion?.nodesUpdatedAt || "").trim(),
+      String(configVersion?.questionBankUpdatedAt || "").trim(),
+    ];
+    const next = parts.join("|");
+    if (!next.replace(/\|/g, "")) return;
+    if (lastConfigVersionRef.current == null) {
+      lastConfigVersionRef.current = next;
+      return;
+    }
+    if (lastConfigVersionRef.current !== next) {
+      lastConfigVersionRef.current = next;
+      void queryClient.invalidateQueries({ queryKey: ["nodes", "roadmap", configId] });
+      void queryClient.invalidateQueries({ queryKey: ["topic-content-bundle"] });
+      void queryClient.invalidateQueries({ queryKey: ["config-question-bank", configId] });
+    }
+  }, [
+    configId,
+    configVersion?.configUpdatedAt,
+    configVersion?.nodesUpdatedAt,
+    configVersion?.questionBankUpdatedAt,
+    queryClient,
+  ]);
 
   const tree = useMemo(() => (nodes ? buildTree(nodes) : []), [nodes]);
   const [collapsedTopicIds, setCollapsedTopicIds] = useState<Set<string>>(new Set());
