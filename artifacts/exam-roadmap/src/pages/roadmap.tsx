@@ -3761,7 +3761,8 @@ function QuestionBankModal({
                   className="h-8"
                   onClick={() => setSelectedQuestion(null)}
                 >
-                  {"<-Back to Question List"}
+                  <ChevronLeft className="w-4 h-4 mr-1" />
+                  Back to Question List
                 </Button>
                 <div className="flex items-center gap-2">
                   <Button
@@ -4372,7 +4373,8 @@ function QuestionBankPane({
           <section className="space-y-3">
             <div className="flex items-center justify-between gap-2">
               <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedQuestion(null)}>
-                {"<- Back to Question List"}
+                <ChevronLeft className="w-4 h-4 mr-1" />
+                Back to Question List
               </Button>
               <div className="flex items-center gap-2">
                 <Button

@@ -1300,7 +1300,11 @@ PAPER TEXT:
 ${textBlock}
 `;
 
-  const buildVerifyPrompt = (initialQuestions: Array<Partial<GeneratedQuestion>>, textBlock: string) => `You are verifying and finalizing extracted replica exam questions.
+  const buildVerifyPrompt = (
+    initialQuestions: Array<Partial<GeneratedQuestion>>,
+    textBlock: string,
+    options?: { compact?: boolean }
+  ) => `You are verifying and finalizing extracted replica exam questions.
 
 Return ONLY valid JSON:
 {
@@ -1331,7 +1335,7 @@ ${initialQuestions
   .join("\n")}
 
 PAPER TEXT:
-${textBlock}
+${options?.compact ? textBlock.slice(0, 18000) : textBlock}
 `;
 
   const toGenerated = (rows: Array<Partial<GeneratedQuestion>>) =>
@@ -1364,6 +1368,10 @@ ${textBlock}
     }
     return chunks;
   };
+  const isLengthLimitedModelError = (err: unknown): boolean => {
+    const message = err instanceof Error ? err.message : String(err || "");
+    return /finish_reason\s*=\s*length/i.test(message) || /max[_\s-]?tokens?/i.test(message);
+  };
 
   try {
     let initialRows: Array<Partial<GeneratedQuestion>> = [];
@@ -1391,14 +1399,44 @@ ${textBlock}
       }
     }
 
-    const verified = await askModelForJson<{ questions?: Array<Partial<GeneratedQuestion>> }>(
-      "You verify completeness and formatting of extracted replica exam questions and output strict JSON only.",
-      buildVerifyPrompt(initialRows, paperForModel),
-      7800,
-      "Replica extraction verification failed",
-    );
+    let finalRows = initialRows;
+    try {
+      const verified = await askModelForJson<{ questions?: Array<Partial<GeneratedQuestion>> }>(
+        "You verify completeness and formatting of extracted replica exam questions and output strict JSON only.",
+        buildVerifyPrompt(initialRows, paperForModel, { compact: true }),
+        5200,
+        "Replica extraction verification failed",
+      );
+      finalRows = verified.questions ?? initialRows;
+    } catch (verifyErr) {
+      if (initialRows.length > 0 && isLengthLimitedModelError(verifyErr)) {
+        logger.warn({ err: verifyErr, extractedCount: initialRows.length }, "Replica verification hit length limit; retrying via chunked verification");
+        try {
+          const verifyChunks = splitIntoChunks(paperForModel, 9000, 700);
+          const verifiedRows: Array<Partial<GeneratedQuestion>> = [];
+          for (let i = 0; i < verifyChunks.length; i++) {
+            const verifiedChunk = await askModelForJson<{ questions?: Array<Partial<GeneratedQuestion>> }>(
+              "You verify completeness and formatting of extracted replica exam questions and output strict JSON only.",
+              buildVerifyPrompt(initialRows, verifyChunks[i], { compact: true }),
+              3200,
+              `Replica extraction chunk verification failed (${i + 1}/${verifyChunks.length})`
+            );
+            verifiedRows.push(...(verifiedChunk.questions ?? []));
+          }
+          finalRows = verifiedRows.length > 0 ? verifiedRows : initialRows;
+        } catch (chunkVerifyErr) {
+          logger.warn(
+            { err: chunkVerifyErr, extractedCount: initialRows.length },
+            "Replica chunked verification failed; using initial extraction"
+          );
+          finalRows = initialRows;
+        }
+      } else {
+        throw verifyErr;
+      }
+    }
 
-    const finalQuestions = toGenerated(verified.questions ?? initialRows).slice(0, cappedMaxQuestions);
+    const finalQuestions = toGenerated(finalRows).slice(0, cappedMaxQuestions);
 
     return {
       questions: finalQuestions,
