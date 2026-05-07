@@ -1,254 +1,178 @@
 # PrepMap
 
 PrepMap is an exam-readiness platform for universities.
-It includes:
-- an **Admin workflow** to create subject configs, upload syllabus/replica material, generate content, and publish live roadmaps.
-- a **Student workflow** to view roadmaps, track progress, and surface adoption analytics.
+
+- Admins create and publish subject configs (roadmaps + question banks).
+- Students and super-students consume live roadmaps and question banks.
+- Student activity is tracked for analytics.
 
 ## Monorepo Structure
 
-- `artifacts/api-server` - Express + TypeScript backend (generation, auth, configs, analytics, uploads)
-- `artifacts/exam-roadmap` - React + Vite frontend (admin + student UI)
-- `api/[...path].ts` - Vercel function entry that mounts backend app
-- `vercel.json` - Vercel build/runtime settings
+- `artifacts/api-server` - Express + TypeScript backend
+- `artifacts/exam-roadmap` - React + Vite frontend
+- `api/[...path].ts` - Vercel API entrypoint for backend mounting
+- `lib/*` - shared packages/schema/client generation
 
-## Core Product Flow
+## Roles and Access Model
 
-1. Admin creates a config (university, semester, exam, subject).
-2. Admin can:
-   - reuse units from the global reusable unit library,
-   - extract units from pasted reading material,
-   - edit units before generation.
-3. Admin provides syllabus + one replica paper (paste text or upload image/pdf/txt).
-4. Content generation creates/updates:
-   - unit/topic/subtopic structure,
-   - subtopic explanations,
-   - question bank (exam-based targets: Mid = 50/20 starred, End Sem = 75/25 starred).
-5. Admin previews, adjusts, and publishes config as `live`.
-6. Students consume roadmap and events are tracked for analytics.
+- `admin`
+  - full admin routes and write actions
+- `student`
+  - learner access, filtered by university + year/branch/batch constraints
+- `super_student`
+  - learner experience with broader viewing scope than `student`
+  - not an admin role
 
-## Student Auth Onboarding
+Important: `super_student` does not get admin privileges; admin routes are guarded by explicit role checks.
 
-- Student initial password can be seeded as their college ID.
-- On first login, student is forced to complete setup before accessing content:
-  - set a new password
-  - set security question + answer
-- Forgot-password flow uses security question + answer validation.
-- The platform stores:
-  - `last_successful_login_at`
-  - `last_password_reset_at`
+## Product Flow
 
-### Bulk student import
+1. Admin creates a config (university, semester, exam, subject, batch context).
+2. Admin uploads syllabus/replica inputs or uses library-based structure.
+3. Generation produces structure, explanations, and question bank.
+4. Admin reviews and publishes config as `live`.
+5. Students consume roadmap and question bank; events feed analytics.
 
-Use TSV/CSV with columns in this order:
-`student_id, student_name, university_name, university_id, semester`
+## Tech Stack
 
-Then run:
+- Backend: Node.js, Express 5, TypeScript, Drizzle ORM, PostgreSQL
+- Frontend: React, Vite, TypeScript, Tailwind, TanStack Query, Wouter
+- Storage: Supabase Storage
+- AI: `anthropic` or `openai`
+- Tooling: pnpm workspace, esbuild
+
+## Prerequisites
+
+- Node.js `22.x` or `24.x`
+- pnpm `10.x` (via Corepack)
+- PostgreSQL (Supabase Postgres supported)
+
+## Local Setup
+
+1. Install dependencies
+
+```bash
+corepack enable
+corepack prepare pnpm@10.33.0 --activate
+pnpm install
+```
+
+2. Backend env
+
+- copy `artifacts/api-server/.env.example` to `artifacts/api-server/.env`
+- fill required values (see Environment Variables section)
+
+3. Frontend env
+
+- copy `artifacts/exam-roadmap/.env.example` to `artifacts/exam-roadmap/.env`
+- set `VITE_API_BASE_URL` only if frontend and backend are not same-origin
+
+4. Run
+
+```bash
+pnpm run dev
+```
+
+- API: `http://localhost:4000`
+- Web: `http://localhost:5173`
+
+## Environment Variables (Backend)
+
+Required:
+
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_STORAGE_BUCKET`
+- `AI_PROVIDER` (`anthropic` or `openai`)
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` (matching provider)
+
+Common optional:
+
+- `PORT` (default handled by platform)
+- `JWT_ACCESS_TTL_SECONDS`
+- `LOG_LEVEL`
+- `API_BODY_LIMIT`
+- `PGPOOL_MAX`
+- `PGPOOL_IDLE_TIMEOUT_MS`
+- `PGPOOL_CONNECTION_TIMEOUT_MS`
+
+## Scripts
+
+Root:
+
+- `pnpm run dev` - run API + web
+- `pnpm run build` - typecheck + API build + web build
+- `pnpm run typecheck` - API + web typecheck
+
+API package (`artifacts/api-server`):
+
+- `pnpm run dev`
+- `pnpm run build`
+- `pnpm run typecheck`
+- `pnpm run import:students ...`
+
+Web package (`artifacts/exam-roadmap`):
+
+- `pnpm run dev`
+- `pnpm run build`
+- `pnpm run typecheck`
+
+## Student Import
+
+Bulk import command:
 
 ```bash
 corepack pnpm --dir artifacts/api-server run import:students ./path/to/students.tsv CSE
 ```
 
-Notes:
-- Password is set to student ID (hashed).
-- `must_reset_password = true` is enforced.
-- Security question/answer are cleared, so first login setup is required.
+Importer behavior:
 
-### Student Data Loading (Header-Based TSV/CSV)
+- temporary password seeded from student id
+- `must_reset_password=true`
+- security question fields cleared
+- existing ids are upserted
 
-You can also import directly from a sheet export with headers like:
+## Deployments
 
-`id, university_id, branch, year, role, name, password, must_reset_password, security_question, security_answer_hash, ...`
+### Current recommended (cost-aware)
 
-Example row:
+- Frontend: Vercel
+- Backend + DB + storage: keep your current existing stack (Supabase-backed) unless AWS cost is justified
 
-`STU0001, uniXX, CSE, 1, student, Student Name, , TRUE, ,`
+### Vercel frontend-only notes
 
-Run:
+- set project root to `artifacts/exam-roadmap`
+- use frontend env var: `VITE_API_BASE_URL=https://<backend-url>`
+- ensure SPA rewrite exists for refresh-safe routing:
+  - `artifacts/exam-roadmap/vercel.json`
 
-```bash
-corepack pnpm --dir artifacts/api-server run import:students "C:\path\students.tsv"
-```
+### AWS path (optional / later)
 
-What the importer enforces during load:
-- Password is always re-set to a bcrypt hash of `id` (temporary first-login password).
-- `must_reset_password` is always set to `true`.
-- `security_question` and `security_answer_hash` are cleared.
-- Existing users with same `id` are upserted (updated).
+Containerized backend path exists (Docker + ECR + ECS), but use only when traffic/control needs justify cost.
 
-## Generation Modes
+## Security Checklist
 
-### Expensive Mode
-- Full in-portal generation using configured AI provider.
-- Reuses existing explanations when available for matching subject/path.
-- Generates fresh config-specific questions.
-
-### Cheap Mode
-- **Lane A**: build structure + extract replica mandatory questions + generate a master prompt.
-- **Lane B**: generate bulk JSON externally, paste/import JSON back into PrepMap.
-- Import pipeline validates, auto-fixes, enforces targets, and saves to DB/global library.
-
-## Tech Stack
-
-- Backend: Node.js, Express, TypeScript, Drizzle ORM, PostgreSQL
-- Frontend: React, Vite, TypeScript, Tailwind, TanStack Query
-- Storage: Supabase Storage (or compatible object storage pathing)
-- AI: provider switch (`anthropic` or `openai`)
-
-### Current Stack (Detailed)
-
-- Monorepo/package management: `pnpm` workspace (`pnpm@10`, Node `22-24`)
-- Frontend app: React + TypeScript + Vite
-- UI system: Tailwind CSS + Radix UI + Lucide + Framer Motion
-- Client routing/data: Wouter + TanStack React Query
-- Backend app: Express 5 + TypeScript (bundled via esbuild)
-- Database layer: PostgreSQL + Drizzle ORM + `pg`
-- Validation/schema: Zod
-- Auth/security: bcrypt + cookie-based auth/session flow
-- File uploads/storage: Supabase Storage (GCS helper libs also present)
-- AI integrations: OpenAI + Anthropic provider support
-- Deployment model: Vercel (serverless API entry via `api/[...path].ts`)
-
-## Prerequisites
-
-- Node.js 22 or 24 LTS
-- pnpm (recommended via Corepack)
-- PostgreSQL database (Supabase Postgres supported)
-
-## Local Setup
-
-1. Install deps
-
-```bash
-corepack enable
-corepack prepare pnpm@10.33.0 --activate
-pnpm install
-```
-
-Windows note:
-- `corepack enable` may require an Administrator terminal because it writes under `C:\Program Files\nodejs`.
-- If you see `EPERM: operation not permitted, open 'C:\Program Files\nodejs\pnpm'`, open PowerShell as Administrator and run only:
-
-```powershell
-corepack enable
-```
-
-- Then continue in your normal terminal:
-
-```bash
-corepack prepare pnpm@10.33.0 --activate
-pnpm install
-pnpm run dev
-```
-
-2. Configure backend env
-
-Copy and fill:
-- `artifacts/api-server/.env.example` -> `artifacts/api-server/.env`
-
-Key required values:
-- `DATABASE_URL`
-- `PORT=4000`
-- `JWT_SECRET`
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_STORAGE_BUCKET`
-- AI settings (`AI_PROVIDER`, provider API key)
-
-Optional auth overrides (defaults used when unset):
-- `JWT_ACCESS_TTL_SECONDS=900` (15 minutes)
-
-3. Configure frontend env (optional overrides)
-
-Copy and fill:
-- `artifacts/exam-roadmap/.env.example` -> `artifacts/exam-roadmap/.env`
-
-4. Run app
-
-```bash
-pnpm run dev
-```
-
-This starts:
-- API on `http://localhost:4000`
-- Web on `http://localhost:5173`
-
-## Build Commands
-
-```bash
-pnpm run build
-pnpm run typecheck
-```
-
-For Vercel web build output:
-
-```bash
-pnpm run build:vercel
-```
-
-## Deployment (Vercel)
-
-The repository is already configured with:
-- `vercel.json` build command and output directory
-- Node runtime for API functions
-- `api/[...path].ts` forwarding to backend Express app
-
-Set environment variables in Vercel matching backend `.env` requirements.
-
-## Important Environment Variables (Backend)
-
-- `DATABASE_URL`
-- `PORT`
-- `JWT_SECRET`
-- `JWT_ACCESS_TTL_SECONDS` (optional; default `900`)
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_STORAGE_BUCKET`
-- `AI_PROVIDER` = `anthropic` or `openai`
-- `AI_MODEL` (optional; provider default applies)
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
-- `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` (optional)
-- `LOW_QUOTA_MODE`
-- `QUESTION_BATCH_SIZE`
-- `QUESTION_MIN_BATCH_SIZE`
-- `AI_REQUEST_INTERVAL_MS`
-
-Question/star targets are exam-based in code:
-- `mid1`/`mid2` -> `50` questions, `20` starred
-- `endsem` -> `75` questions, `25` starred
-
-## Notes on Data Design
-
-- Config content is **config-specific** for safety.
-- Reusable unit library is **global** and used for structural reuse.
-- Explanations can be reused where applicable; question banks are regenerated per config.
-- Analytics aggregate student events to config and university adoption views.
-- Config "delete" is treated as **disable** (content is preserved; config is hidden from normal active lists).
-- Admin can open student roadmap preview, but admin interactions are excluded from tracking analytics.
-
-## Student Rating System (Admin Analytics)
-
-In **Admin -> Analytics -> Student Progress** (inside a selected live config), each student is assigned a rating using:
-- sub-topic coverage % (from tracked roadmap progress)
-- QB interaction % (question-bank interactions / total questions in that config)
-
-Rules:
-- **Poor**: sub-topic coverage `<= 30%` **or** QB interaction `<= 50%`
-- **Average**: sub-topic coverage `>= 50%` **and** QB interaction `>= 50%`
-- **Good**: sub-topic coverage `>= 75%` **and** QB interaction `>= 75%`
-
-The config-level summary shows both:
-- count per rating
-- percentage per rating (based on total students in that config)
-
-## Security
-
-- Never commit real API keys/service-role keys.
-- Rotate any key that was ever exposed in logs, screenshots, or commits.
+- never commit `.env` or local secret files
+- rotate keys immediately if exposed in logs/screenshots/commits
+- prefer platform secret stores for production
+- use IAM user credentials, not root, for AWS CLI
 
 ## Troubleshooting
 
-- DB timeout/auth errors: verify `DATABASE_URL` and pooler credentials.
-- Upload URL errors: verify Supabase vars and bucket existence.
-- AI JSON parse errors: reduce batch sizes and/or enable `LOW_QUOTA_MODE=true`.
-- Windows `corepack enable` `EPERM`: run `corepack enable` once in Administrator PowerShell, then continue in normal terminal.
+- Refresh gives 404 on frontend routes:
+  - add SPA rewrite in `artifacts/exam-roadmap/vercel.json`
+- Docker env parsing error:
+  - remove spaces around `KEY=value`
+- Push blocked by GitHub secret scanning:
+  - remove secrets from commit history, not only current files
+- ECS task fails during startup with DB constraint errors:
+  - fix violating rows or align constraints with business rules before redeploy
+
+## What Changed Recently
+
+- Topic-content loading and caching strategy improved to reduce payload/egress.
+- `super_student` behavior separated from admin privileges.
+- DB constraints aligned with role semantics (batch/name checks updated).
+

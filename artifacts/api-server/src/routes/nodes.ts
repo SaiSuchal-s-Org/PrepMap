@@ -3,6 +3,7 @@ import { GetNodesQueryParams, GetNodesResponse } from "../api-zod";
 import { db, nodesTable, configsTable, usersTable, configUnitLinksTable, canonicalNodesTable, withRequestDbContext } from "../db";
 import { eq, inArray } from "drizzle-orm";
 import { getJwtRequestAuth } from "../lib/requestAuth";
+import { cacheGetOrSet, cacheTtlMs, isLiveStatus } from "../lib/serverCache";
 
 const router: IRouter = Router();
 
@@ -133,7 +134,7 @@ router.get("/nodes", async (req, res) => {
       return;
     }
 
-    const [config, selectedLinks, loadedNodes] = await withRequestDbContext(auth.claims, async (tx) => {
+    const [config, selectedLinks] = await withRequestDbContext(auth.claims, async (tx) => {
       const [config] = await tx
         .select({
           id: configsTable.id,
@@ -151,12 +152,7 @@ router.get("/nodes", async (req, res) => {
         .from(configUnitLinksTable)
         .where(eq(configUnitLinksTable.configId, configId));
 
-      const nodes = await tx
-        .select()
-        .from(nodesTable)
-        .where(eq(nodesTable.configId, configId));
-
-      return [config ?? null, selectedLinks, nodes] as const;
+      return [config ?? null, selectedLinks] as const;
     });
 
     if (!config) {
@@ -182,80 +178,96 @@ router.get("/nodes", async (req, res) => {
       }
     }
 
-    const selectedUnitIds = selectedLinks.map((l) => l.unitLibraryId);
-    let nodes = loadedNodes;
-
-    if (selectedUnitIds.length > 0) {
-      nodes = nodes.filter((n) => selectedUnitIds.includes(String(n.unitLibraryId || "")));
-    }
-
-    const canonicalIds = nodes
-      .map((n) => String(n.canonicalNodeId || "").trim())
-      .filter(Boolean);
-    const canonicalRows = canonicalIds.length > 0
-      ? await db
+    const buildNodesResponse = async () => {
+      const loadedNodes = await withRequestDbContext(auth.claims, async (tx) =>
+        tx
           .select()
-          .from(canonicalNodesTable)
-          .where(inArray(canonicalNodesTable.id, canonicalIds))
-      : [];
-    const canonicalById = new Map(canonicalRows.map((c) => [c.id, c]));
-    const scopedByCanonical = new Map<string, string>();
-    for (const n of nodes) {
-      const cId = String(n.canonicalNodeId || "").trim();
-      if (cId) scopedByCanonical.set(cId, n.id);
-    }
+          .from(nodesTable)
+          .where(eq(nodesTable.configId, configId))
+      );
+      const selectedUnitIds = selectedLinks.map((l) => l.unitLibraryId);
+      let nodes = loadedNodes;
 
-    const siblingMap = new Map<string, typeof nodes>();
-    for (const n of nodes) {
-      const key = String(n.parentId || "__root__");
-      const arr = siblingMap.get(key) || [];
-      arr.push(n);
-      siblingMap.set(key, arr);
-    }
-    for (const [key, arr] of siblingMap.entries()) {
-      arr.sort((a, b) => {
-        const byOrder = toOrder(a.sortOrder) - toOrder(b.sortOrder);
-        if (byOrder !== 0) return byOrder;
-        return String(a.title || "").localeCompare(String(b.title || ""));
-      });
-      siblingMap.set(key, arr);
-    }
+      if (selectedUnitIds.length > 0) {
+        nodes = nodes.filter((n) => selectedUnitIds.includes(String(n.unitLibraryId || "")));
+      }
 
-    const response = GetNodesResponse.parse(
-      nodes.map((n) => {
-        const canonical = canonicalById.get(String(n.canonicalNodeId || "").trim());
-        const siblings = siblingMap.get(String(n.parentId || "__root__")) || [];
-        const idx = siblings.findIndex((s) => s.id === n.id);
-        const prev = idx > 0 ? siblings[idx - 1] : null;
-        const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
-        const explicitPrereqTitles = parseTextArray(canonical?.prerequisiteTitles ?? n.prerequisiteTitles);
-        const explicitPrereqCanonicalIds = parseTextArray(canonical?.prerequisiteNodeIds ?? n.prerequisiteNodeIds);
-        const explicitNextTitles = parseTextArray(canonical?.nextRecommendedTitles ?? n.nextRecommendedTitles);
-        const explicitNextCanonicalIds = parseTextArray(canonical?.nextRecommendedNodeIds ?? n.nextRecommendedNodeIds);
-        const mappedPrereqNodeIds = explicitPrereqCanonicalIds
-          .map((cid) => scopedByCanonical.get(cid) || cid)
-          .filter(Boolean);
-        const mappedNextNodeIds = explicitNextCanonicalIds
-          .map((cid) => scopedByCanonical.get(cid) || cid)
-          .filter(Boolean);
-        return {
-          id: n.id,
-          configId: n.configId,
-          title: n.title,
-          type: n.type,
-          parentId: n.parentId,
-          explanation: includeContent ? (String(canonical?.explanation || n.explanation || "").trim() || null) : null,
-          learningGoal: includeContent ? (String(canonical?.learningGoal || n.learningGoal || "").trim() || null) : null,
-          exampleBlock: includeContent ? (String(canonical?.exampleBlock || n.exampleBlock || "").trim() || null) : null,
-          supportNote: includeContent ? (String(canonical?.supportNote || n.supportNote || "").trim() || null) : null,
-          prerequisiteTitles: explicitPrereqTitles.length > 0 ? explicitPrereqTitles : prev ? [prev.title] : [],
-          prerequisiteNodeIds: mappedPrereqNodeIds.length > 0 ? mappedPrereqNodeIds : prev ? [prev.id] : [],
-          nextRecommendedTitles: explicitNextTitles.length > 0 ? explicitNextTitles : next ? [next.title] : [],
-          nextRecommendedNodeIds: mappedNextNodeIds.length > 0 ? mappedNextNodeIds : next ? [next.id] : [],
-          sortOrder: n.sortOrder,
-        };
-      })
-    );
+      const canonicalIds = nodes
+        .map((n) => String(n.canonicalNodeId || "").trim())
+        .filter(Boolean);
+      const canonicalRows = canonicalIds.length > 0
+        ? await db
+            .select()
+            .from(canonicalNodesTable)
+            .where(inArray(canonicalNodesTable.id, canonicalIds))
+        : [];
+      const canonicalById = new Map(canonicalRows.map((c) => [c.id, c]));
+      const scopedByCanonical = new Map<string, string>();
+      for (const n of nodes) {
+        const cId = String(n.canonicalNodeId || "").trim();
+        if (cId) scopedByCanonical.set(cId, n.id);
+      }
+
+      const siblingMap = new Map<string, typeof nodes>();
+      for (const n of nodes) {
+        const key = String(n.parentId || "__root__");
+        const arr = siblingMap.get(key) || [];
+        arr.push(n);
+        siblingMap.set(key, arr);
+      }
+      for (const [key, arr] of siblingMap.entries()) {
+        arr.sort((a, b) => {
+          const byOrder = toOrder(a.sortOrder) - toOrder(b.sortOrder);
+          if (byOrder !== 0) return byOrder;
+          return String(a.title || "").localeCompare(String(b.title || ""));
+        });
+        siblingMap.set(key, arr);
+      }
+
+      return GetNodesResponse.parse(
+        nodes.map((n) => {
+          const canonical = canonicalById.get(String(n.canonicalNodeId || "").trim());
+          const siblings = siblingMap.get(String(n.parentId || "__root__")) || [];
+          const idx = siblings.findIndex((s) => s.id === n.id);
+          const prev = idx > 0 ? siblings[idx - 1] : null;
+          const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+          const explicitPrereqTitles = parseTextArray(canonical?.prerequisiteTitles ?? n.prerequisiteTitles);
+          const explicitPrereqCanonicalIds = parseTextArray(canonical?.prerequisiteNodeIds ?? n.prerequisiteNodeIds);
+          const explicitNextTitles = parseTextArray(canonical?.nextRecommendedTitles ?? n.nextRecommendedTitles);
+          const explicitNextCanonicalIds = parseTextArray(canonical?.nextRecommendedNodeIds ?? n.nextRecommendedNodeIds);
+          const mappedPrereqNodeIds = explicitPrereqCanonicalIds
+            .map((cid) => scopedByCanonical.get(cid) || cid)
+            .filter(Boolean);
+          const mappedNextNodeIds = explicitNextCanonicalIds
+            .map((cid) => scopedByCanonical.get(cid) || cid)
+            .filter(Boolean);
+          return {
+            id: n.id,
+            configId: n.configId,
+            title: n.title,
+            type: n.type,
+            parentId: n.parentId,
+            explanation: includeContent ? (String(canonical?.explanation || n.explanation || "").trim() || null) : null,
+            learningGoal: includeContent ? (String(canonical?.learningGoal || n.learningGoal || "").trim() || null) : null,
+            exampleBlock: includeContent ? (String(canonical?.exampleBlock || n.exampleBlock || "").trim() || null) : null,
+            supportNote: includeContent ? (String(canonical?.supportNote || n.supportNote || "").trim() || null) : null,
+            prerequisiteTitles: explicitPrereqTitles.length > 0 ? explicitPrereqTitles : prev ? [prev.title] : [],
+            prerequisiteNodeIds: mappedPrereqNodeIds.length > 0 ? mappedPrereqNodeIds : prev ? [prev.id] : [],
+            nextRecommendedTitles: explicitNextTitles.length > 0 ? explicitNextTitles : next ? [next.title] : [],
+            nextRecommendedNodeIds: mappedNextNodeIds.length > 0 ? mappedNextNodeIds : next ? [next.id] : [],
+            sortOrder: n.sortOrder,
+          };
+        })
+      );
+    };
+
+    const nodesCacheKey =
+      user.role !== "admin" && isLiveStatus(config.status)
+        ? `nodes:${configId}:${includeContent ? "with-content" : "structure"}`
+        : null;
+    const response = nodesCacheKey
+      ? await cacheGetOrSet(nodesCacheKey, cacheTtlMs.nodes, buildNodesResponse)
+      : await buildNodesResponse();
 
     res.json(response);
   } catch (error) {
@@ -297,7 +309,7 @@ router.get("/nodes/topic-content", async (req, res) => {
       return;
     }
 
-    const [config, loadedNodes] = await withRequestDbContext(auth.claims, async (tx) => {
+    const [config] = await withRequestDbContext(auth.claims, async (tx) => {
       const [config] = await tx
         .select({
           id: configsTable.id,
@@ -310,12 +322,7 @@ router.get("/nodes/topic-content", async (req, res) => {
         .where(eq(configsTable.id, configId))
         .limit(1);
 
-      const nodes = await tx
-        .select()
-        .from(nodesTable)
-        .where(eq(nodesTable.configId, configId));
-
-      return [config ?? null, nodes] as const;
+      return [config ?? null] as const;
     });
 
     if (!config) {
@@ -341,95 +348,113 @@ router.get("/nodes/topic-content", async (req, res) => {
       }
     }
 
-    const topicNode = loadedNodes.find((n) => n.id === topicId && n.type === "topic");
-    if (!topicNode) {
-      res.status(404).json({ error: "Topic not found for this config" });
-      return;
-    }
-
-    const bundleNodes = [
-      topicNode,
-      ...loadedNodes.filter((n) => n.type === "subtopic" && n.parentId === topicNode.id),
-    ].sort((a, b) => toOrder(a.sortOrder) - toOrder(b.sortOrder));
-
-    const canonicalIds = bundleNodes
-      .map((n) => String(n.canonicalNodeId || "").trim())
-      .filter(Boolean);
-    const canonicalRows = canonicalIds.length > 0
-      ? await db
+    const buildTopicBundle = async () => {
+      const loadedNodes = await withRequestDbContext(auth.claims, async (tx) =>
+        tx
           .select()
-          .from(canonicalNodesTable)
-          .where(inArray(canonicalNodesTable.id, canonicalIds))
-      : [];
-    const canonicalById = new Map(canonicalRows.map((c) => [c.id, c]));
-    const scopedByCanonical = new Map(
-      loadedNodes
-        .map((n) => [String(n.canonicalNodeId || ""), n.id] as const)
-        .filter(([id]) => !!id)
-    );
+          .from(nodesTable)
+          .where(eq(nodesTable.configId, configId))
+      );
+      const topicNode = loadedNodes.find((n) => n.id === topicId && n.type === "topic");
+      if (!topicNode) return null;
 
-    const siblingMap = new Map<string, typeof loadedNodes>();
-    for (const n of loadedNodes) {
-      const key = String(n.parentId || "__root__");
-      const arr = siblingMap.get(key) || [];
-      arr.push(n);
-      siblingMap.set(key, arr);
-    }
-    for (const [key, arr] of siblingMap.entries()) {
-      arr.sort((a, b) => {
-        const byOrder = toOrder(a.sortOrder) - toOrder(b.sortOrder);
-        if (byOrder !== 0) return byOrder;
-        return String(a.title || "").localeCompare(String(b.title || ""));
-      });
-      siblingMap.set(key, arr);
-    }
+      const bundleNodes = [
+        topicNode,
+        ...loadedNodes.filter((n) => n.type === "subtopic" && n.parentId === topicNode.id),
+      ].sort((a, b) => toOrder(a.sortOrder) - toOrder(b.sortOrder));
 
-    const toContentNode = (n: typeof loadedNodes[number]) => {
-      const canonical = canonicalById.get(String(n.canonicalNodeId || "").trim());
-      const siblings = siblingMap.get(String(n.parentId || "__root__")) || [];
-      const idx = siblings.findIndex((s) => s.id === n.id);
-      const prev = idx > 0 ? siblings[idx - 1] : null;
-      const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
-      const explicitPrereqTitles = parseTextArray(canonical?.prerequisiteTitles ?? n.prerequisiteTitles);
-      const explicitPrereqCanonicalIds = parseTextArray(canonical?.prerequisiteNodeIds ?? n.prerequisiteNodeIds);
-      const explicitNextTitles = parseTextArray(canonical?.nextRecommendedTitles ?? n.nextRecommendedTitles);
-      const explicitNextCanonicalIds = parseTextArray(canonical?.nextRecommendedNodeIds ?? n.nextRecommendedNodeIds);
+      const canonicalIds = bundleNodes
+        .map((n) => String(n.canonicalNodeId || "").trim())
+        .filter(Boolean);
+      const canonicalRows = canonicalIds.length > 0
+        ? await db
+            .select()
+            .from(canonicalNodesTable)
+            .where(inArray(canonicalNodesTable.id, canonicalIds))
+        : [];
+      const canonicalById = new Map(canonicalRows.map((c) => [c.id, c]));
+      const scopedByCanonical = new Map(
+        loadedNodes
+          .map((n) => [String(n.canonicalNodeId || ""), n.id] as const)
+          .filter(([id]) => !!id)
+      );
+
+      const siblingMap = new Map<string, typeof loadedNodes>();
+      for (const n of loadedNodes) {
+        const key = String(n.parentId || "__root__");
+        const arr = siblingMap.get(key) || [];
+        arr.push(n);
+        siblingMap.set(key, arr);
+      }
+      for (const [key, arr] of siblingMap.entries()) {
+        arr.sort((a, b) => {
+          const byOrder = toOrder(a.sortOrder) - toOrder(b.sortOrder);
+          if (byOrder !== 0) return byOrder;
+          return String(a.title || "").localeCompare(String(b.title || ""));
+        });
+        siblingMap.set(key, arr);
+      }
+
+      const toContentNode = (n: typeof loadedNodes[number]) => {
+        const canonical = canonicalById.get(String(n.canonicalNodeId || "").trim());
+        const siblings = siblingMap.get(String(n.parentId || "__root__")) || [];
+        const idx = siblings.findIndex((s) => s.id === n.id);
+        const prev = idx > 0 ? siblings[idx - 1] : null;
+        const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+        const explicitPrereqTitles = parseTextArray(canonical?.prerequisiteTitles ?? n.prerequisiteTitles);
+        const explicitPrereqCanonicalIds = parseTextArray(canonical?.prerequisiteNodeIds ?? n.prerequisiteNodeIds);
+        const explicitNextTitles = parseTextArray(canonical?.nextRecommendedTitles ?? n.nextRecommendedTitles);
+        const explicitNextCanonicalIds = parseTextArray(canonical?.nextRecommendedNodeIds ?? n.nextRecommendedNodeIds);
+        return {
+          id: n.id,
+          title: n.title,
+          type: n.type,
+          parentId: n.parentId,
+          sortOrder: n.sortOrder,
+          explanation: String(canonical?.explanation || n.explanation || "").trim() || null,
+          learningGoal: String(canonical?.learningGoal || n.learningGoal || "").trim() || null,
+          exampleBlock: String(canonical?.exampleBlock || n.exampleBlock || "").trim() || null,
+          supportNote: String(canonical?.supportNote || n.supportNote || "").trim() || null,
+          prerequisiteTitles: explicitPrereqTitles.length > 0 ? explicitPrereqTitles : prev ? [prev.title] : [],
+          prerequisiteNodeIds: explicitPrereqCanonicalIds
+            .map((cid) => scopedByCanonical.get(cid) || cid)
+            .filter(Boolean)
+            .length > 0
+            ? explicitPrereqCanonicalIds.map((cid) => scopedByCanonical.get(cid) || cid).filter(Boolean)
+            : prev
+              ? [prev.id]
+              : [],
+          nextRecommendedTitles: explicitNextTitles.length > 0 ? explicitNextTitles : next ? [next.title] : [],
+          nextRecommendedNodeIds: explicitNextCanonicalIds
+            .map((cid) => scopedByCanonical.get(cid) || cid)
+            .filter(Boolean)
+            .length > 0
+            ? explicitNextCanonicalIds.map((cid) => scopedByCanonical.get(cid) || cid).filter(Boolean)
+            : next
+              ? [next.id]
+              : [],
+        };
+      };
+
       return {
-        id: n.id,
-        title: n.title,
-        type: n.type,
-        parentId: n.parentId,
-        sortOrder: n.sortOrder,
-        explanation: String(canonical?.explanation || n.explanation || "").trim() || null,
-        learningGoal: String(canonical?.learningGoal || n.learningGoal || "").trim() || null,
-        exampleBlock: String(canonical?.exampleBlock || n.exampleBlock || "").trim() || null,
-        supportNote: String(canonical?.supportNote || n.supportNote || "").trim() || null,
-        prerequisiteTitles: explicitPrereqTitles.length > 0 ? explicitPrereqTitles : prev ? [prev.title] : [],
-        prerequisiteNodeIds: explicitPrereqCanonicalIds
-          .map((cid) => scopedByCanonical.get(cid) || cid)
-          .filter(Boolean)
-          .length > 0
-          ? explicitPrereqCanonicalIds.map((cid) => scopedByCanonical.get(cid) || cid).filter(Boolean)
-          : prev
-            ? [prev.id]
-            : [],
-        nextRecommendedTitles: explicitNextTitles.length > 0 ? explicitNextTitles : next ? [next.title] : [],
-        nextRecommendedNodeIds: explicitNextCanonicalIds
-          .map((cid) => scopedByCanonical.get(cid) || cid)
-          .filter(Boolean)
-          .length > 0
-          ? explicitNextCanonicalIds.map((cid) => scopedByCanonical.get(cid) || cid).filter(Boolean)
-          : next
-            ? [next.id]
-            : [],
+        configId,
+        topic: toContentNode(topicNode),
+        subtopics: bundleNodes.filter((n) => n.type === "subtopic").map(toContentNode),
       };
     };
 
-    res.json({
-      configId,
-      topic: toContentNode(topicNode),
-      subtopics: bundleNodes.filter((n) => n.type === "subtopic").map(toContentNode),
-    });
+    const bundleCacheKey =
+      user.role !== "admin" && isLiveStatus(config.status)
+        ? `topic-bundle:${configId}:${topicId}`
+        : null;
+    const payload = bundleCacheKey
+      ? await cacheGetOrSet(bundleCacheKey, cacheTtlMs.topicBundle, buildTopicBundle)
+      : await buildTopicBundle();
+    if (!payload) {
+      res.status(404).json({ error: "Topic not found for this config" });
+      return;
+    }
+    res.json(payload);
   } catch (error) {
     req.log.error({ err: error }, "Failed to fetch topic content bundle");
     res.status(500).json({ error: "Internal server error" });
