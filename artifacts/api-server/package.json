@@ -38,6 +38,7 @@
     "pg": "^8.20.0",
     "pino": "^9",
     "pino-http": "^10",
+    "redis": "^4.7.0",
     "zod": "catalog:"
   },
   "devDependencies": {

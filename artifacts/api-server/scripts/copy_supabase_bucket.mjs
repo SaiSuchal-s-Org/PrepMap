@@ -80,7 +80,13 @@ async function listAllFiles(bucket, prefix) {
 
 async function copyFile(file) {
   const { data: sourceBlob, error: downloadError } = await source.storage.from(sourceBucket).download(file.path);
-  if (downloadError) throw downloadError;
+  if (downloadError) {
+    const msg = String(downloadError?.message || "").toLowerCase();
+    if (msg.includes("not found") || msg.includes("resource was not found")) {
+      return { skipped: true, reason: "not_found" };
+    }
+    throw downloadError;
+  }
 
   const bytes = new Uint8Array(await sourceBlob.arrayBuffer());
 
@@ -89,6 +95,7 @@ async function copyFile(file) {
     contentType: file.contentType,
   });
   if (uploadError) throw uploadError;
+  return { skipped: false };
 }
 
 async function run() {
@@ -99,16 +106,24 @@ async function run() {
     console.log(`Found ${files.length} files under ${sourceBucket}/${rootPrefix}`);
 
     let copied = 0;
+    let skippedNotFound = 0;
     for (const file of files) {
-      await copyFile(file);
-      copied += 1;
-      if (copied % 25 === 0 || copied === files.length) {
-        console.log(`Copied ${copied}/${files.length}`);
+      const result = await copyFile(file);
+      if (result?.skipped) {
+        skippedNotFound += 1;
+        console.warn(`Skipped missing source object: ${file.path}`);
+      } else {
+        copied += 1;
+      }
+      const processed = copied + skippedNotFound;
+      if (processed % 25 === 0 || processed === files.length) {
+        console.log(`Processed ${processed}/${files.length} (copied: ${copied}, skipped_missing: ${skippedNotFound})`);
       }
     }
 
     console.log("\nStorage copy complete.");
     console.log(`Files copied: ${copied}`);
+    console.log(`Files skipped (missing at source): ${skippedNotFound}`);
     console.log(`Elapsed: ${((Date.now() - startedAt) / 1000).toFixed(2)}s`);
   } catch (error) {
     if (error && typeof error === "object") {

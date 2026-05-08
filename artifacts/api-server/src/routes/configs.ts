@@ -77,6 +77,16 @@ function doesStudentYearMatchConfigYear(
   return allowed.includes(configToken);
 }
 
+function toIsoStringOrUndefined(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  return undefined;
+}
+
 router.get("/configs", async (req, res) => {
   try {
     const { universityId, status } = GetConfigsQueryParams.parse(req.query);
@@ -176,7 +186,7 @@ router.get("/configs", async (req, res) => {
         exam: c.exam,
         status: c.status,
         createdBy: c.createdBy,
-        createdAt: c.createdAt?.toISOString(),
+        createdAt: toIsoStringOrUndefined((c as any).createdAt),
         syllabusFileUrl: c.syllabusFileUrl ?? null,
         paperFileUrls: c.paperFileUrls ?? null,
       }))

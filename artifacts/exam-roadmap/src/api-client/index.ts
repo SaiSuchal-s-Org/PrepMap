@@ -160,12 +160,30 @@ export interface LiveConfigQuestionBankInteractionSummaryResponse {
 export interface ServerCacheStatsResponse {
   success: boolean;
   cache: {
+    backend?: string;
     size: number;
     hit: number;
     miss: number;
+    redisHit?: number;
+    redisMiss?: number;
+    redisErr?: number;
     set: number;
     del: number;
     sweep: number;
+  };
+}
+
+export interface ServerCacheHealthResponse {
+  success: boolean;
+  health: {
+    backend: string;
+    redis: {
+      enabled: boolean;
+      ready: boolean;
+    };
+    memory: {
+      size: number;
+    };
   };
 }
 
@@ -516,6 +534,13 @@ export const getLiveConfigQuestionBankInteractionSummary = async (options?: Requ
 
 export const getServerCacheStats = async (options?: RequestInit) => {
   return customFetch<ServerCacheStatsResponse>(`/api/admin/cache-stats`, {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getServerCacheHealth = async (options?: RequestInit) => {
+  return customFetch<ServerCacheHealthResponse>(`/api/admin/cache-health`, {
     ...options,
     method: "GET",
   });
@@ -1078,6 +1103,19 @@ export const useGetServerCacheStats = <
   return useQuery<ServerCacheStatsResponse, TError, TData>({
     queryKey: ["admin-cache-stats"],
     queryFn: () => getServerCacheStats(),
+    ...options,
+  });
+};
+
+export const useGetServerCacheHealth = <
+  TError = ErrorType<unknown>,
+  TData = ServerCacheHealthResponse,
+>(
+  options?: Omit<UseQueryOptions<ServerCacheHealthResponse, TError, TData>, "queryKey" | "queryFn">,
+) => {
+  return useQuery<ServerCacheHealthResponse, TError, TData>({
+    queryKey: ["admin-cache-health"],
+    queryFn: () => getServerCacheHealth(),
     ...options,
   });
 };

@@ -14,6 +14,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+const CLIENT_CACHE_BYPASS = String(import.meta.env.VITE_BYPASS_CLIENT_CACHE || "").trim().toLowerCase() === "true";
+
 function normalizeYearToken(value: string | null | undefined): string {
   return String(value ?? "")
     .trim()
@@ -114,9 +116,10 @@ export default function Home() {
     query: {
       queryKey: ["configs", "home", selectedUni],
       enabled: !!selectedUni,
-      staleTime: 5 * 60 * 1000,
-      gcTime: 30 * 60 * 1000,
-      refetchOnWindowFocus: false,
+      staleTime: CLIENT_CACHE_BYPASS ? 0 : 5 * 60 * 1000,
+      gcTime: CLIENT_CACHE_BYPASS ? 0 : 30 * 60 * 1000,
+      refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+      refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
     }
   });
   const { data: configsVersion } = useGetConfigsVersion(selectedUni || null, {

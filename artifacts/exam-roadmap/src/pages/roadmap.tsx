@@ -27,6 +27,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { EXAM_TYPES, SEMESTERS, UNIVERSITIES } from "@/lib/constants";
 
+const CLIENT_CACHE_BYPASS = String(import.meta.env.VITE_BYPASS_CLIENT_CACHE || "").trim().toLowerCase() === "true";
+
 const NODE_COLORS = {
   unit: { bg: "bg-blue-500", border: "border-blue-400", light: "bg-blue-50 border-blue-200", text: "text-blue-700", line: "#3b82f6" },
   topic: { bg: "bg-violet-500", border: "border-violet-400", light: "bg-violet-50 border-violet-200", text: "text-violet-700", line: "#8b5cf6" },
@@ -685,9 +687,10 @@ export default function Roadmap() {
       query: {
         queryKey: ["configs", "roadmap", configId],
         enabled: !!configId,
-        staleTime: 5 * 60 * 1000,
-        gcTime: 5 * 60 * 1000,
-        refetchOnWindowFocus: false,
+        staleTime: CLIENT_CACHE_BYPASS ? 0 : 5 * 60 * 1000,
+        gcTime: CLIENT_CACHE_BYPASS ? 0 : 5 * 60 * 1000,
+        refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+        refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
       },
     }
   );
@@ -716,9 +719,10 @@ export default function Roadmap() {
       query: {
         queryKey: ["nodes", "roadmap", configId],
         enabled: isConfigReady,
-        staleTime: 6 * 60 * 60 * 1000,
-        gcTime: 6 * 60 * 60 * 1000,
-        refetchOnWindowFocus: false,
+        staleTime: CLIENT_CACHE_BYPASS ? 0 : 6 * 60 * 60 * 1000,
+        gcTime: CLIENT_CACHE_BYPASS ? 0 : 6 * 60 * 60 * 1000,
+        refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+        refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
       },
     }
   );
@@ -1098,9 +1102,10 @@ export default function Roadmap() {
     isConfigReady ? configId : null,
     selectedTopicId,
     {
-      staleTime: 60 * 60 * 1000,
-      gcTime: 60 * 60 * 1000,
-      refetchOnWindowFocus: false,
+      staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+      gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+      refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+      refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
     }
   );
 
@@ -3397,9 +3402,10 @@ function QuestionBankModal({
   onClose: () => void;
 }) {
   const { data, isLoading, isError } = useGetQuestionBank(configId, {
-    staleTime: 60 * 60 * 1000,
-    gcTime: 60 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+    refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
   });
   const validQuestions = useMemo(
     () => data?.questions ?? [],
@@ -4050,9 +4056,10 @@ function QuestionBankPane({
   onClose: () => void;
 }) {
   const { data, isLoading, isError } = useGetQuestionBank(configId, {
-    staleTime: 60 * 60 * 1000,
-    gcTime: 60 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
+    refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
   });
   const validQuestions = useMemo(
     () => data?.questions ?? [],

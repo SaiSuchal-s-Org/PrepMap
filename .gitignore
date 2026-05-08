@@ -61,6 +61,7 @@ Thumbs.db
 .env.production.local
 **/.env
 **/.env.local
+**/.env.*
 !.env.example
 !**/.env.example
 
