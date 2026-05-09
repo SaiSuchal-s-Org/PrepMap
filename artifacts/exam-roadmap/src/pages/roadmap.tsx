@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+﻿import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
@@ -731,7 +731,7 @@ export default function Roadmap() {
   );
   const { data: configVersion } = useGetConfigVersion(isConfigReady ? configId : null, {
     enabled: isConfigReady,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     refetchInterval: 5 * 60 * 1000,
     staleTime: 0,
     gcTime: 5 * 60 * 1000,
