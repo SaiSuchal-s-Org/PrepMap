@@ -4,7 +4,6 @@ import { db, configsTable, nodesTable, usersTable, configQuestionsTable, withReq
 import { eq, and, ne, or, sql, type SQL } from "drizzle-orm";
 import { requireAdmin } from "../middleware/adminAuth";
 import { getJwtRequestAuth } from "../lib/requestAuth";
-import { cacheDelete, cacheDeleteByPrefix, cacheGetOrSet, cacheTtlMs, isLiveStatus } from "../lib/serverCache";
 
 const router: IRouter = Router();
 
@@ -146,34 +145,12 @@ router.get("/configs", async (req, res) => {
       conditions.push(ne(configsTable.status, "deleted"));
     }
 
-    const configsCacheKey = !isAdmin
-      ? [
-          "student-configs",
-          String(user.id || "").trim(),
-          String(user.role || "").trim().toLowerCase(),
-          String(user.universityId || "").trim(),
-          String((user as any).batch || "").trim() || "2025",
-          String(user.year || "").trim(),
-          String(user.branch || "").trim(),
-          String(universityId || "").trim(),
-        ].join(":")
-      : null;
-
-    const configs = configsCacheKey
-      ? await cacheGetOrSet(configsCacheKey, cacheTtlMs.configs, async () =>
-          withRequestDbContext(auth.claims, async (tx) =>
-            tx
-              .select()
-              .from(configsTable)
-              .where(conditions.length > 0 ? and(...conditions) : undefined)
-          )
-        )
-      : await withRequestDbContext(auth.claims, async (tx) =>
-          tx
-            .select()
-            .from(configsTable)
-            .where(conditions.length > 0 ? and(...conditions) : undefined)
-        );
+    const configs = await withRequestDbContext(auth.claims, async (tx) =>
+      tx
+        .select()
+        .from(configsTable)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+    );
 
     const response = GetConfigsResponse.parse(
       configs.map((c) => ({
@@ -444,115 +421,7 @@ router.get("/configs/:id/question-bank", async (req, res) => {
       }
     }
 
-    const qbCacheKey = user.role !== "admin" && isLiveStatus(config.status)
-      ? `question-bank:${id}`
-      : null;
-
-    const payload = qbCacheKey
-      ? await cacheGetOrSet(qbCacheKey, cacheTtlMs.questionBank, async () => {
-          const configNodes = (await withRequestDbContext(auth.claims, async (tx) =>
-            tx
-              .select({
-                id: nodesTable.id,
-                title: nodesTable.title,
-                type: nodesTable.type,
-                parentId: nodesTable.parentId,
-                unitSubtopicId: nodesTable.unitSubtopicId,
-              })
-              .from(nodesTable)
-              .where(eq(nodesTable.configId, id))
-          )) as Array<{
-            id: string;
-            title: string;
-            type: string;
-            parentId: string | null;
-            unitSubtopicId: string | null;
-          }>;
-
-          const nodeById = new Map(configNodes.map((n) => [n.id, n]));
-          const subtopicNodeByCanonicalId = new Map<string, string[]>();
-          for (const n of configNodes) {
-            if (n.type !== "subtopic" || !n.unitSubtopicId) continue;
-            const list = subtopicNodeByCanonicalId.get(n.unitSubtopicId) ?? [];
-            list.push(n.id);
-            subtopicNodeByCanonicalId.set(n.unitSubtopicId, list);
-          }
-
-          const canonicalQuestions = (await withRequestDbContext(auth.claims, async (tx) =>
-            tx
-              .select({
-                id: configQuestionsTable.id,
-                markType: configQuestionsTable.markType,
-                question: configQuestionsTable.question,
-                answer: configQuestionsTable.answer,
-                isStarred: configQuestionsTable.isStarred,
-                starSource: configQuestionsTable.starSource,
-                unitSubtopicId: configQuestionsTable.unitSubtopicId,
-              })
-              .from(configQuestionsTable)
-              .where(eq(configQuestionsTable.configId, id))
-          )) as Array<{
-            id: number;
-            markType: string;
-            question: string;
-            answer: string;
-            isStarred: boolean | null;
-            starSource: string | null;
-            unitSubtopicId: string | null;
-          }>;
-
-          const questions = canonicalQuestions.map((q) => {
-            let nodeId = "";
-            if (!nodeId) {
-              const mapped = q.unitSubtopicId ? (subtopicNodeByCanonicalId.get(q.unitSubtopicId) ?? []) : [];
-              nodeId = mapped[0] ?? "";
-            }
-            return {
-              id: q.id,
-              nodeId,
-              markType: q.markType,
-              question: q.question,
-              answer: q.answer,
-              isStarred: q.isStarred,
-              starSource: q.starSource,
-            };
-          });
-
-          const filtered = questions
-            .map((q) => {
-              const subtopic = nodeById.get(q.nodeId);
-              const topic = subtopic?.parentId ? nodeById.get(subtopic.parentId) : undefined;
-              const unit = topic?.parentId ? nodeById.get(topic.parentId) : undefined;
-              return {
-                id: q.id,
-                markType: q.markType === "2" ? "Foundational" : q.markType === "5" ? "Applied" : q.markType,
-                question: q.question,
-                answer: q.answer,
-                isStarred: q.isStarred ?? false,
-                starSource: q.starSource ?? "none",
-                subtopicId: q.nodeId || "",
-                subtopicTitle: subtopic?.title ?? "",
-                topicTitle: topic?.title ?? "",
-                unitTitle: unit?.title ?? "",
-              };
-            })
-            .sort((a, b) => {
-              const starCmp = Number(b.isStarred) - Number(a.isStarred);
-              if (starCmp !== 0) return starCmp;
-              const markRank = (v: string) => (v === "Foundational" ? 0 : v === "Applied" ? 1 : 2);
-              const markCmp = markRank(a.markType) - markRank(b.markType);
-              if (markCmp !== 0) return markCmp;
-              return a.id - b.id;
-            });
-
-          return {
-            configId: id,
-            subject: config.subject,
-            total: filtered.length,
-            questions: filtered,
-          };
-        })
-      : await (async () => {
+    const payload = await (async () => {
           const configNodes = (await withRequestDbContext(auth.claims, async (tx) =>
             tx
               .select({
@@ -643,7 +512,7 @@ router.get("/configs/:id/question-bank", async (req, res) => {
               return a.id - b.id;
             }),
           };
-        })();
+      })();
 
     res.json(payload);
   } catch (error) {
@@ -695,8 +564,6 @@ router.put("/configs/:configId/question-bank/questions/:questionId/star", requir
         })
         .where(eq(configQuestionsTable.id, questionId))
     );
-    cacheDelete(`question-bank:${configId}`);
-
     res.json({ success: true });
   } catch (error) {
     req.log.error({ err: error }, "Failed to update question star");
@@ -751,8 +618,6 @@ router.put("/configs/:configId/question-bank/questions/:questionId", requireAdmi
         })
         .where(eq(configQuestionsTable.id, questionId))
     );
-    cacheDelete(`question-bank:${configId}`);
-
     res.json({ success: true });
   } catch (error) {
     req.log.error({ err: error }, "Failed to update question text");

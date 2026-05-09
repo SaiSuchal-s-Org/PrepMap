@@ -3,13 +3,16 @@ import { GetNodesQueryParams, GetNodesResponse } from "../api-zod";
 import { db, nodesTable, configsTable, usersTable, configUnitLinksTable, canonicalNodesTable, withRequestDbContext } from "../db";
 import { eq, inArray } from "drizzle-orm";
 import { getJwtRequestAuth } from "../lib/requestAuth";
-import { cacheGetOrSet, cacheTtlMs, isLiveStatus } from "../lib/serverCache";
 
 const router: IRouter = Router();
 
 function toOrder(value: number | null | undefined): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function isLiveStatus(value: string | null | undefined): boolean {
+  return String(value || "").trim().toLowerCase() === "live";
 }
 
 function parseTextArray(raw: unknown): string[] {
@@ -261,14 +264,7 @@ router.get("/nodes", async (req, res) => {
       );
     };
 
-    const nodesCacheKey =
-      user.role !== "admin" && isLiveStatus(config.status)
-        ? `nodes:${configId}:${includeContent ? "with-content" : "structure"}`
-        : null;
-    const response = nodesCacheKey
-      ? await cacheGetOrSet(nodesCacheKey, cacheTtlMs.nodes, buildNodesResponse)
-      : await buildNodesResponse();
-
+    const response = await buildNodesResponse();
     res.json(response);
   } catch (error) {
     req.log.error({ err: error }, "Failed to fetch nodes");
@@ -443,13 +439,7 @@ router.get("/nodes/topic-content", async (req, res) => {
       };
     };
 
-    const bundleCacheKey =
-      user.role !== "admin" && isLiveStatus(config.status)
-        ? `topic-bundle:${configId}:${topicId}`
-        : null;
-    const payload = bundleCacheKey
-      ? await cacheGetOrSet(bundleCacheKey, cacheTtlMs.topicBundle, buildTopicBundle)
-      : await buildTopicBundle();
+    const payload = await buildTopicBundle();
     if (!payload) {
       res.status(404).json({ error: "Topic not found for this config" });
       return;

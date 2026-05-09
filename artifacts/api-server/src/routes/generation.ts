@@ -28,180 +28,12 @@ import { requireAdmin } from "../middleware/adminAuth";
 import { askAI } from "../lib/ai";
 import { repairBrokenFormulaBullets } from "../lib/textFormatting";
 import { z } from "zod/v4";
-import { cacheDelete, cacheDeleteByPrefix, cacheSet, cacheTtlMs } from "../lib/serverCache";
 
 const router: IRouter = Router();
-
-function invalidateConfigCaches(configId: string) {
-  cacheDelete(`nodes:${configId}:structure`);
-  cacheDelete(`nodes:${configId}:with-content`);
-  cacheDelete(`question-bank:${configId}`);
-  cacheDeleteByPrefix(`topic-bundle:${configId}:`);
-  cacheDeleteByPrefix("student-configs:");
-}
 
 function toOrder(value: number | null | undefined): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
-}
-
-async function prewarmNodesStructureCache(configId: string) {
-  const selectedLinks = await db
-    .select({ unitLibraryId: configUnitLinksTable.unitLibraryId })
-    .from(configUnitLinksTable)
-    .where(eq(configUnitLinksTable.configId, configId));
-  const loadedNodes = await db
-    .select()
-    .from(nodesTable)
-    .where(eq(nodesTable.configId, configId));
-
-  const selectedUnitIds = selectedLinks.map((l) => l.unitLibraryId);
-  let nodes = loadedNodes;
-  if (selectedUnitIds.length > 0) {
-    nodes = nodes.filter((n) => selectedUnitIds.includes(String(n.unitLibraryId || "")));
-  }
-
-  const canonicalIds = nodes
-    .map((n) => String(n.canonicalNodeId || "").trim())
-    .filter(Boolean);
-  const canonicalRows = canonicalIds.length > 0
-    ? await db
-        .select()
-        .from(canonicalNodesTable)
-        .where(inArray(canonicalNodesTable.id, canonicalIds))
-    : [];
-  const canonicalById = new Map(canonicalRows.map((c) => [c.id, c]));
-  const scopedByCanonical = new Map<string, string>();
-  for (const n of nodes) {
-    const cId = String(n.canonicalNodeId || "").trim();
-    if (cId) scopedByCanonical.set(cId, n.id);
-  }
-
-  const siblingMap = new Map<string, typeof nodes>();
-  for (const n of nodes) {
-    const key = String(n.parentId || "__root__");
-    const arr = siblingMap.get(key) || [];
-    arr.push(n);
-    siblingMap.set(key, arr);
-  }
-  for (const [key, arr] of siblingMap.entries()) {
-    arr.sort((a, b) => {
-      const byOrder = toOrder(a.sortOrder) - toOrder(b.sortOrder);
-      if (byOrder !== 0) return byOrder;
-      return String(a.title || "").localeCompare(String(b.title || ""));
-    });
-    siblingMap.set(key, arr);
-  }
-
-  const payload = nodes.map((n) => {
-    const canonical = canonicalById.get(String(n.canonicalNodeId || "").trim());
-    const siblings = siblingMap.get(String(n.parentId || "__root__")) || [];
-    const idx = siblings.findIndex((s) => s.id === n.id);
-    const prev = idx > 0 ? siblings[idx - 1] : null;
-    const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
-    const explicitPrereqTitles = parseTextArray(canonical?.prerequisiteTitles ?? n.prerequisiteTitles);
-    const explicitPrereqCanonicalIds = parseTextArray(canonical?.prerequisiteNodeIds ?? n.prerequisiteNodeIds);
-    const explicitNextTitles = parseTextArray(canonical?.nextRecommendedTitles ?? n.nextRecommendedTitles);
-    const explicitNextCanonicalIds = parseTextArray(canonical?.nextRecommendedNodeIds ?? n.nextRecommendedNodeIds);
-    const mappedPrereqNodeIds = explicitPrereqCanonicalIds
-      .map((cid) => scopedByCanonical.get(cid) || cid)
-      .filter(Boolean);
-    const mappedNextNodeIds = explicitNextCanonicalIds
-      .map((cid) => scopedByCanonical.get(cid) || cid)
-      .filter(Boolean);
-    return {
-      id: n.id,
-      configId: n.configId,
-      title: n.title,
-      type: n.type,
-      parentId: n.parentId,
-      explanation: null,
-      learningGoal: null,
-      exampleBlock: null,
-      supportNote: null,
-      prerequisiteTitles: explicitPrereqTitles.length > 0 ? explicitPrereqTitles : prev ? [prev.title] : [],
-      prerequisiteNodeIds: mappedPrereqNodeIds.length > 0 ? mappedPrereqNodeIds : prev ? [prev.id] : [],
-      nextRecommendedTitles: explicitNextTitles.length > 0 ? explicitNextTitles : next ? [next.title] : [],
-      nextRecommendedNodeIds: mappedNextNodeIds.length > 0 ? mappedNextNodeIds : next ? [next.id] : [],
-      sortOrder: n.sortOrder,
-    };
-  });
-
-  cacheSet(`nodes:${configId}:structure`, payload, cacheTtlMs.nodes);
-}
-
-async function prewarmQuestionBankCache(configId: string, subject: string) {
-  const configNodes = await db
-    .select({
-      id: nodesTable.id,
-      title: nodesTable.title,
-      type: nodesTable.type,
-      parentId: nodesTable.parentId,
-      unitSubtopicId: nodesTable.unitSubtopicId,
-    })
-    .from(nodesTable)
-    .where(eq(nodesTable.configId, configId));
-  const nodeById = new Map(configNodes.map((n) => [n.id, n]));
-  const subtopicNodeByCanonicalId = new Map<string, string[]>();
-  for (const n of configNodes) {
-    if (n.type !== "subtopic" || !n.unitSubtopicId) continue;
-    const list = subtopicNodeByCanonicalId.get(n.unitSubtopicId) ?? [];
-    list.push(n.id);
-    subtopicNodeByCanonicalId.set(n.unitSubtopicId, list);
-  }
-
-  const canonicalQuestions = await db
-    .select({
-      id: configQuestionsTable.id,
-      markType: configQuestionsTable.markType,
-      question: configQuestionsTable.question,
-      answer: configQuestionsTable.answer,
-      isStarred: configQuestionsTable.isStarred,
-      starSource: configQuestionsTable.starSource,
-      unitSubtopicId: configQuestionsTable.unitSubtopicId,
-    })
-    .from(configQuestionsTable)
-    .where(eq(configQuestionsTable.configId, configId));
-
-  const questions = canonicalQuestions.map((q) => {
-    const mapped = q.unitSubtopicId ? (subtopicNodeByCanonicalId.get(q.unitSubtopicId) ?? []) : [];
-    const nodeId = mapped[0] ?? "";
-    const subtopic = nodeById.get(nodeId);
-    const topic = subtopic?.parentId ? nodeById.get(subtopic.parentId) : undefined;
-    const unit = topic?.parentId ? nodeById.get(topic.parentId) : undefined;
-    return {
-      id: q.id,
-      markType: q.markType === "2" ? "Foundational" : q.markType === "5" ? "Applied" : q.markType,
-      question: q.question,
-      answer: q.answer,
-      isStarred: q.isStarred ?? false,
-      starSource: q.starSource ?? "none",
-      subtopicId: nodeId,
-      subtopicTitle: subtopic?.title ?? "",
-      topicTitle: topic?.title ?? "",
-      unitTitle: unit?.title ?? "",
-    };
-  });
-
-  questions.sort((a, b) => {
-    const starCmp = Number(b.isStarred) - Number(a.isStarred);
-    if (starCmp !== 0) return starCmp;
-    const markRank = (v: string) => (v === "Foundational" ? 0 : v === "Applied" ? 1 : 2);
-    const markCmp = markRank(a.markType) - markRank(b.markType);
-    if (markCmp !== 0) return markCmp;
-    return a.id - b.id;
-  });
-
-  cacheSet(
-    `question-bank:${configId}`,
-    {
-      configId,
-      subject,
-      total: questions.length,
-      questions,
-    },
-    cacheTtlMs.questionBank,
-  );
 }
 
 type CheapGenerationMode = "explanations_only" | "questions_only";
@@ -1482,15 +1314,6 @@ router.post("/configs/:id/publish", requireAdmin, async (req, res) => {
       .update(configsTable)
       .set({ status: newStatus, updatedAt: new Date() })
       .where(eq(configsTable.id, id));
-    invalidateConfigCaches(id);
-    if (newStatus === "live") {
-      void Promise.all([
-        prewarmNodesStructureCache(id),
-        prewarmQuestionBankCache(id, String(config.subject || "")),
-      ]).catch((err) => {
-        req.log.warn({ err, configId: id }, "Cache prewarm failed after publish");
-      });
-    }
 
     res.json({ success: true });
   } catch (error) {
@@ -2273,7 +2096,6 @@ router.post("/configs/:id/cheap/import", requireAdmin, async (req, res) => {
     const userId = String((req as any).userId || "admin");
     const authClaims = ((req as any).authClaims ?? null) as import("../lib/jwt").AccessTokenPayload | null;
     const result = await performCheapImport(id, req.body, userId, req.log, authClaims);
-    invalidateConfigCaches(id);
     res.json(result);
   } catch (error) {
     req.log.error({ err: error }, "Failed to import cheap lane B content");
@@ -2305,7 +2127,6 @@ router.post("/configs/:id/cheap/import/start", requireAdmin, async (req, res) =>
 
     void performCheapImport(id, req.body, userId, req.log, authClaims)
       .then((result) => {
-        invalidateConfigCaches(id);
         setCheapImportProgress(id, {
           status: "complete",
           stage: "done",
@@ -2966,7 +2787,6 @@ router.delete("/configs/:id", requireAdmin, async (req, res) => {
       .update(configsTable)
       .set({ status: "disabled", updatedAt: new Date() })
       .where(eq(configsTable.id, id));
-    invalidateConfigCaches(id);
 
     res.json({ success: true, disabled: true });
   } catch (error) {
@@ -3046,7 +2866,6 @@ router.delete("/configs/:id/permanent", requireAdmin, async (req, res) => {
       await tx.delete(eventsTable).where(eq(eventsTable.configId, id));
       await tx.delete(configsTable).where(eq(configsTable.id, id));
     });
-    invalidateConfigCaches(id);
 
     req.log.info(
       {

@@ -1,5 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { dehydrate, hydrate } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -15,6 +17,9 @@ import Subtopic from "@/pages/subtopic";
 import Admin from "@/pages/admin";
 import ConfigDetail from "@/pages/config-detail";
 
+const QUERY_CACHE_STORAGE_KEY = "prepmap_react_query_cache_v1";
+const QUERY_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -23,6 +28,47 @@ const queryClient = new QueryClient({
     }
   }
 });
+
+function restoreQueryCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(QUERY_CACHE_STORAGE_KEY);
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw) as { timestamp?: number; state?: unknown };
+    const timestamp = Number(parsed?.timestamp || 0);
+    if (!timestamp || Date.now() - timestamp > QUERY_CACHE_MAX_AGE_MS) {
+      window.localStorage.removeItem(QUERY_CACHE_STORAGE_KEY);
+      return;
+    }
+
+    if (parsed?.state) {
+      hydrate(queryClient, parsed.state as Parameters<typeof hydrate>[1]);
+    }
+  } catch {
+    try {
+      window.localStorage.removeItem(QUERY_CACHE_STORAGE_KEY);
+    } catch {}
+  }
+}
+
+function persistQueryCache() {
+  if (typeof window === "undefined") return;
+  try {
+    const state = dehydrate(queryClient, {
+      shouldDehydrateQuery: (query) => query.state.status === "success",
+    });
+    window.localStorage.setItem(
+      QUERY_CACHE_STORAGE_KEY,
+      JSON.stringify({ timestamp: Date.now(), state }),
+    );
+  } catch {}
+}
+
+function isAdminSession(): boolean {
+  const user = getStoredUser();
+  return user?.role === "admin";
+}
 
 function isLearnerRole(role: string | undefined) {
   return role === "student" || role === "super_student";
@@ -82,6 +128,45 @@ function AppRouter() {
 }
 
 function App() {
+  const [cacheReady, setCacheReady] = useState(false);
+
+  useEffect(() => {
+    if (isAdminSession()) {
+      try {
+        window.localStorage.removeItem(QUERY_CACHE_STORAGE_KEY);
+      } catch {}
+    } else {
+      restoreQueryCache();
+    }
+    setCacheReady(true);
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = queryClient.getQueryCache().subscribe(() => {
+      if (isAdminSession()) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        persistQueryCache();
+      }, 500);
+    });
+
+    const persistNow = () => {
+      if (isAdminSession()) return;
+      persistQueryCache();
+    };
+    window.addEventListener("beforeunload", persistNow);
+
+    return () => {
+      unsubscribe();
+      if (timeoutId) clearTimeout(timeoutId);
+      window.removeEventListener("beforeunload", persistNow);
+      if (!isAdminSession()) {
+        persistQueryCache();
+      }
+    };
+  }, []);
+
+  if (!cacheReady) return null;
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

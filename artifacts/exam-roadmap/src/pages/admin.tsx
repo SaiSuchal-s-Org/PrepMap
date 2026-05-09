@@ -5,8 +5,6 @@ import {
   useDeleteConfig,
   useGetAppMetadata,
   useGetLiveConfigQuestionBankInteractionSummary,
-  useGetServerCacheStats,
-  useGetServerCacheHealth,
   useGetUniversityAnalytics,
   useGetConfigStudentProgress,
   useGetQuestionBank,
@@ -1350,30 +1348,6 @@ function AnalyticsTab() {
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
-  const {
-    data: cacheStatsData,
-    isLoading: cacheStatsLoading,
-    refetch: refetchCacheStats,
-    isFetching: cacheStatsFetching,
-  } = useGetServerCacheStats({
-    refetchInterval: 30000,
-    staleTime: 0,
-    gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-  });
-  const {
-    data: cacheHealthData,
-    isLoading: cacheHealthLoading,
-    refetch: refetchCacheHealth,
-    isFetching: cacheHealthFetching,
-  } = useGetServerCacheHealth({
-    refetchInterval: 30000,
-    staleTime: 0,
-    gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-  });
   const { data: universityAnalytics } = useGetUniversityAnalytics({
     staleTime: 0,
     gcTime: 0,
@@ -1586,14 +1560,6 @@ function AnalyticsTab() {
     }
     return counts;
   }, [studentProgress, selectedConfigQuestionBank]);
-  const cacheStats = cacheStatsData?.cache;
-  const cacheHealth = cacheHealthData?.health;
-  const cacheTotalLookups = (cacheStats?.hit ?? 0) + (cacheStats?.miss ?? 0);
-  const cacheHitRate =
-    cacheTotalLookups > 0 ? Math.round(((cacheStats?.hit ?? 0) / cacheTotalLookups) * 100) : 0;
-  const redisTotalLookups = (cacheStats?.redisHit ?? 0) + (cacheStats?.redisMiss ?? 0);
-  const redisHitRate =
-    redisTotalLookups > 0 ? Math.round(((cacheStats?.redisHit ?? 0) / redisTotalLookups) * 100) : 0;
   const selectedConfigSubtopicRatingPercents = useMemo(() => {
     const total = studentProgress?.students.length ?? 0;
     const toPercent = (count: number) => (total > 0 ? Math.round((count / total) * 100) : 0);
@@ -1661,99 +1627,6 @@ function AnalyticsTab() {
 
   return (
     <div>
-      <div className="mb-6 rounded-2xl border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">Server Cache</h3>
-            <p className="text-xs text-muted-foreground">Auto-refresh every 30s</p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refetchCacheStats()}
-            disabled={cacheStatsFetching}
-          >
-            {cacheStatsFetching ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Hit Rate</p>
-            <p className="text-lg font-semibold text-foreground">{cacheStatsLoading ? "-" : `${cacheHitRate}%`}</p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Cache Size</p>
-            <p className="text-lg font-semibold text-foreground">{cacheStatsLoading ? "-" : (cacheStats?.size ?? 0)}</p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Hits / Misses</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheStatsLoading ? "-" : `${cacheStats?.hit ?? 0} / ${cacheStats?.miss ?? 0}`}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Set / Del / Sweep</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheStatsLoading
-                ? "-"
-                : `${cacheStats?.set ?? 0} / ${cacheStats?.del ?? 0} / ${cacheStats?.sweep ?? 0}`}
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="mb-6 rounded-2xl border border-border bg-card p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">Redis Cache</h3>
-            <p className="text-xs text-muted-foreground">Auto-refresh every 30s</p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void refetchCacheHealth();
-              void refetchCacheStats();
-            }}
-            disabled={cacheHealthFetching || cacheStatsFetching}
-          >
-            {cacheHealthFetching || cacheStatsFetching ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Backend Mode</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheHealthLoading ? "-" : (cacheHealth?.backend ?? "memory-only")}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Redis Status</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheHealthLoading
-                ? "-"
-                : cacheHealth?.redis?.enabled
-                ? cacheHealth.redis.ready
-                  ? "Connected"
-                  : "Disconnected"
-                : "Disabled"}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Redis Hit Rate</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheStatsLoading ? "-" : `${redisHitRate}%`}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-secondary/20 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Redis H / M / E</p>
-            <p className="text-lg font-semibold text-foreground">
-              {cacheStatsLoading
-                ? "-"
-                : `${cacheStats?.redisHit ?? 0} / ${cacheStats?.redisMiss ?? 0} / ${cacheStats?.redisErr ?? 0}`}
-            </p>
-          </div>
-        </div>
-      </div>
       <div className="bg-card rounded-3xl border border-border shadow-lg shadow-black/5 overflow-hidden">
         <div className="px-6 py-5 border-b border-border bg-secondary/30">
           <h2 className="text-lg font-semibold text-foreground">Detailed Analytics By University</h2>

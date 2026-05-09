@@ -4,7 +4,6 @@ import { db, eventsTable, nodesTable, usersTable, configsTable, withRequestDbCon
 import { eq, count, inArray } from "drizzle-orm";
 import { requireAdmin } from "../middleware/adminAuth";
 import type { AccessTokenPayload } from "../lib/jwt";
-import { cacheHealth, cacheStats } from "../lib/serverCache";
 
 const router: IRouter = Router();
 const QUESTION_BANK_EVENT_PREFIX = "__qb__:";
@@ -45,20 +44,6 @@ router.get("/admin/stats", requireAdmin, async (req, res) => {
     req.log.error({ err: error }, "Failed to fetch admin stats");
     res.status(500).json({ error: "Internal server error" });
   }
-});
-
-router.get("/admin/cache-stats", requireAdmin, async (_req, res) => {
-  res.json({
-    success: true,
-    cache: cacheStats(),
-  });
-});
-
-router.get("/admin/cache-health", requireAdmin, async (_req, res) => {
-  res.json({
-    success: true,
-    health: cacheHealth(),
-  });
 });
 
 router.get("/admin/analytics/universities", requireAdmin, async (req, res) => {

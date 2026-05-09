@@ -157,36 +157,6 @@ export interface LiveConfigQuestionBankInteractionSummaryResponse {
   }>;
 }
 
-export interface ServerCacheStatsResponse {
-  success: boolean;
-  cache: {
-    backend?: string;
-    size: number;
-    hit: number;
-    miss: number;
-    redisHit?: number;
-    redisMiss?: number;
-    redisErr?: number;
-    set: number;
-    del: number;
-    sweep: number;
-  };
-}
-
-export interface ServerCacheHealthResponse {
-  success: boolean;
-  health: {
-    backend: string;
-    redis: {
-      enabled: boolean;
-      ready: boolean;
-    };
-    memory: {
-      size: number;
-    };
-  };
-}
-
 export interface ConfigsVersionResponse {
   maxUpdatedAt: string | null;
   total: number;
@@ -530,20 +500,6 @@ export const getLiveConfigQuestionBankInteractionSummary = async (options?: Requ
       method: "GET",
     }
   );
-};
-
-export const getServerCacheStats = async (options?: RequestInit) => {
-  return customFetch<ServerCacheStatsResponse>(`/api/admin/cache-stats`, {
-    ...options,
-    method: "GET",
-  });
-};
-
-export const getServerCacheHealth = async (options?: RequestInit) => {
-  return customFetch<ServerCacheHealthResponse>(`/api/admin/cache-health`, {
-    ...options,
-    method: "GET",
-  });
 };
 
 export const getConfigsVersion = async (universityId?: string | null, options?: RequestInit) => {
@@ -1094,32 +1050,6 @@ export const useGetLiveConfigQuestionBankInteractionSummary = <
   });
 };
 
-export const useGetServerCacheStats = <
-  TError = ErrorType<unknown>,
-  TData = ServerCacheStatsResponse,
->(
-  options?: Omit<UseQueryOptions<ServerCacheStatsResponse, TError, TData>, "queryKey" | "queryFn">,
-) => {
-  return useQuery<ServerCacheStatsResponse, TError, TData>({
-    queryKey: ["admin-cache-stats"],
-    queryFn: () => getServerCacheStats(),
-    ...options,
-  });
-};
-
-export const useGetServerCacheHealth = <
-  TError = ErrorType<unknown>,
-  TData = ServerCacheHealthResponse,
->(
-  options?: Omit<UseQueryOptions<ServerCacheHealthResponse, TError, TData>, "queryKey" | "queryFn">,
-) => {
-  return useQuery<ServerCacheHealthResponse, TError, TData>({
-    queryKey: ["admin-cache-health"],
-    queryFn: () => getServerCacheHealth(),
-    ...options,
-  });
-};
-
 export const useGetConfigsVersion = <
   TError = ErrorType<unknown>,
   TData = ConfigsVersionResponse,
@@ -1450,8 +1380,10 @@ export const useGetLatestInteractionState = <
     queryKey: ["config-latest-interaction-state", configId],
     queryFn: () => getLatestInteractionState(configId!),
     enabled: !!configId,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     ...options,
   });
 };
@@ -1467,8 +1399,10 @@ export const useGetCompletionState = <
     queryKey: ["config-completion-state", configId],
     queryFn: () => getCompletionState(configId!),
     enabled: !!configId,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     ...options,
   });
 };
@@ -1516,6 +1450,10 @@ export const useGetSecurityQuestion = <
     queryKey: ["auth-security-question", collegeId],
     queryFn: () => getSecurityQuestion(collegeId!),
     enabled: !!collegeId,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     ...options,
   });
 };

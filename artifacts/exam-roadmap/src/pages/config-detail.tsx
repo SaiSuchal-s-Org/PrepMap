@@ -91,7 +91,14 @@ function FileUploadSection({
   const uploadFiles = useUploadConfigFiles();
   const generateLaneA = useGenerateCheapLaneA();
   const saveReplicaQuestions = useSaveReplicaQuestions();
-  const { data: savedReplicaQuestionsData, refetch: refetchSavedReplicaQuestions } = useGetSavedReplicaQuestions(configId);
+  const { data: savedReplicaQuestionsData, refetch: refetchSavedReplicaQuestions } = useGetSavedReplicaQuestions(configId, {
+    query: {
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    },
+  });
   const { toast } = useToast();
 
   const stripMainQuestionNumber = (value: string): string => {
@@ -743,11 +750,21 @@ function CheapGenerationSection({ configId }: { configId: string }) {
     data: gapReport,
     refetch: refetchGapReport,
     isFetching: gapReportLoading,
-  } = useGetCheapGapReport(configId, laneAMode, { enabled: false });
+  } = useGetCheapGapReport(configId, laneAMode, {
+    enabled: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const [importPolling, setImportPolling] = useState(false);
   const [expectedImportQuestionCount, setExpectedImportQuestionCount] = useState(0);
   const { data: importStatus } = useGetCheapLaneBImportStatus(configId, {
     query: {
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
       refetchInterval: importPolling ? 1000 : false,
     },
   });

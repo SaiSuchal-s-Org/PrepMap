@@ -17,7 +17,6 @@ import {
 import { and, eq } from "drizzle-orm";
 import { requireAdmin } from "../middleware/adminAuth";
 import { getJwtRequestAuth } from "../lib/requestAuth";
-import { cacheDelete } from "../lib/serverCache";
 
 const router: IRouter = Router();
 
@@ -360,13 +359,6 @@ router.put("/subtopics/:id", requireAdmin, async (req, res) => {
         }
       });
     }
-
-    cacheDelete(`nodes:${content.configId}:structure`);
-    cacheDelete(`nodes:${content.configId}:with-content`);
-    if (content.parentId) {
-      cacheDelete(`topic-bundle:${content.configId}:${content.parentId}`);
-    }
-    cacheDelete(`question-bank:${content.configId}`);
 
     res.json({ success: true });
   } catch (error) {

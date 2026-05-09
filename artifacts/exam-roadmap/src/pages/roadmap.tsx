@@ -722,8 +722,8 @@ export default function Roadmap() {
       query: {
         queryKey: ["nodes", "roadmap", configId],
         enabled: isConfigReady,
-        staleTime: CLIENT_CACHE_BYPASS ? 0 : 6 * 60 * 60 * 1000,
-        gcTime: CLIENT_CACHE_BYPASS ? 0 : 6 * 60 * 60 * 1000,
+        staleTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
+        gcTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
         refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
         refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
       },
@@ -1105,8 +1105,8 @@ export default function Roadmap() {
     isConfigReady ? configId : null,
     selectedTopicId,
     {
-      staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
-      gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+      staleTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
+      gcTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
       refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
       refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
     }
@@ -3405,8 +3405,8 @@ function QuestionBankModal({
   onClose: () => void;
 }) {
   const { data, isLoading, isError } = useGetQuestionBank(configId, {
-    staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
-    gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    staleTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
+    gcTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
     refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
     refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
   });
@@ -4059,8 +4059,8 @@ function QuestionBankPane({
   onClose: () => void;
 }) {
   const { data, isLoading, isError } = useGetQuestionBank(configId, {
-    staleTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
-    gcTime: CLIENT_CACHE_BYPASS ? 0 : 60 * 60 * 1000,
+    staleTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
+    gcTime: CLIENT_CACHE_BYPASS ? 0 : 24 * 60 * 60 * 1000,
     refetchOnWindowFocus: CLIENT_CACHE_BYPASS ? true : false,
     refetchOnMount: CLIENT_CACHE_BYPASS ? "always" : true,
   });
