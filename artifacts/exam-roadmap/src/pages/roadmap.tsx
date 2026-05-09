@@ -209,7 +209,10 @@ function parseAnswerSegments(answer: string): AnswerSegment[] {
     .replace(/\\r\\n/g, "\n")
     .replace(/\\n/g, "\n")
     .replace(/\r\n/g, "\n");
-  const regex = /```[ \t]*([a-zA-Z0-9_-]+)?[ \t]*\n([\s\S]*?)```/g;
+  // Support both fenced styles:
+  // 1) ```jsx\ncode...\n```
+  // 2) ```jsx code...```
+  const regex = /```[ \t]*([a-zA-Z0-9_-]+)?(?:[ \t]*\n|[ \t]+)([\s\S]*?)```/g;
   const segments: AnswerSegment[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;

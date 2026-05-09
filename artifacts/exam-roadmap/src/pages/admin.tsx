@@ -50,7 +50,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
-import { getStoredUser } from "@/lib/auth";
 
 function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
   type DisabledConfigMatch = {
@@ -87,7 +86,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
   const semExamLabel = (semesterId: string, examId: string) =>
     `${semesterLabel(semesterId)} - ${examLabel(examId)}`;
   const commonBranch = metadata?.commonBranch || COMMON_BRANCH;
-  const currentBatch = String(getStoredUser()?.batch || "").trim() || "2025";
+  const [batch, setBatch] = useState("2025");
   const { data: existingConfigs } = useGetConfigs({}, { query: { queryKey: ["configs", "all"] } });
   const createConfig = useCreateConfig();
   const { data: librarySubjects } = useGetLibrarySubjects();
@@ -148,6 +147,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const selectedBatch = String(batch || "").trim() || "2025";
     const createdConfigs: Array<{ id: string; subject: string }> = [];
     try {
       const enteredSubject = subject.trim();
@@ -169,7 +169,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
           .filter(
             (c) =>
               c.universityId === universityId &&
-              String((c as any).batch || "2025").trim() === currentBatch &&
+              String((c as any).batch || "2025").trim() === selectedBatch &&
               c.year === year &&
               c.branch === commonBranch &&
               c.exam === exam &&
@@ -203,7 +203,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
           .filter(
             (c) =>
               c.universityId === universityId &&
-              String((c as any).batch || "2025").trim() === currentBatch &&
+              String((c as any).batch || "2025").trim() === selectedBatch &&
               c.year === year &&
               c.branch === commonBranch &&
               c.exam === exam &&
@@ -231,7 +231,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
           forceCreateNew?: boolean;
         } = {
           universityId,
-          batch: currentBatch,
+          batch: selectedBatch,
           year,
           branch: commonBranch,
           subject: pendingSubject,
@@ -281,6 +281,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
       setSubjectSelection(CUSTOM_SUBJECT_OPTION);
       setSubjectDrafts([]);
       setExam("");
+      setBatch("2025");
       setSelectedUnitIds([]);
       onCreated();
       toast({
@@ -364,6 +365,15 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
               <Label>Branch</Label>
               <Input value={commonBranch} readOnly disabled />
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Batch</Label>
+            <Input
+              value={batch}
+              onChange={(e) => setBatch(e.target.value)}
+              placeholder="e.g. 2025"
+            />
           </div>
 
           <div className="space-y-2">
@@ -479,6 +489,7 @@ function CreateConfigDialog({ onCreated }: { onCreated: () => void }) {
             disabled={
               !universityId ||
               !year ||
+              !String(batch || "").trim() ||
               !(subjectDrafts.length > 0 || subject.trim()) ||
               !exam ||
               createConfig.isPending ||

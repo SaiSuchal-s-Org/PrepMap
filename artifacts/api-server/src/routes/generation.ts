@@ -1523,7 +1523,14 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     const isQuestionsOnly = mode === "questions_only";
     const isExplanationsOnly = mode === "explanations_only";
 
-    const totalQuestionTarget = isExplanationsOnly ? 0 : pkg.totalQuestionTarget;
+    const totalQuestionTarget = isExplanationsOnly
+      ? 0
+      : (() => {
+          const baseline = pkg.totalQuestionTarget;
+          const replicaCount = pkg.replicaQuestions.length;
+          if (replicaCount <= baseline) return baseline;
+          return Math.ceil(replicaCount / 10) * 10;
+        })();
     const mandatoryReplicaQuestions = isExplanationsOnly
       ? []
       : pkg.replicaQuestions.slice(0, totalQuestionTarget);
@@ -1558,7 +1565,7 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
       : promptStructureBase;
     if (droppedReplicaCount > 0) {
       laneAWarnings.push(
-        `Replica-first cap applied: kept ${mandatoryReplicaQuestions.length} mandatory replica questions and dropped ${droppedReplicaCount} extras to match total question target ${totalQuestionTarget}.`
+        `Replica question list exceeded target and was capped to ${totalQuestionTarget}.`
       );
     }
 
