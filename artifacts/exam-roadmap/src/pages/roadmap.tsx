@@ -51,6 +51,33 @@ const QUESTION_BANK_EVENT_PREFIX = "__qb__:";
 const ZOOM_STEP = 1.1;
 const MAX_AUTO_FOCUS_ZOOM = 1.1;
 const COLLAPSED_GRID_VISIBLE_COLUMNS = 3.5;
+const CLIENT_ENDPOINT_COOLDOWN_MS = 10 * 1000;
+
+function getCooldownStorageKey(kind: "version" | "completion" | "latest", configId: string): string {
+  return `rl:${kind}:${configId}`;
+}
+
+function getRemainingCooldownMs(kind: "version" | "completion" | "latest", configId: string): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const key = getCooldownStorageKey(kind, configId);
+    const raw = window.sessionStorage.getItem(key);
+    const lastTs = Number(raw || 0);
+    if (!lastTs) return 0;
+    const elapsed = Date.now() - lastTs;
+    return elapsed >= CLIENT_ENDPOINT_COOLDOWN_MS ? 0 : CLIENT_ENDPOINT_COOLDOWN_MS - elapsed;
+  } catch {
+    return 0;
+  }
+}
+
+function markCooldownNow(kind: "version" | "completion" | "latest", configId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = getCooldownStorageKey(kind, configId);
+    window.sessionStorage.setItem(key, String(Date.now()));
+  } catch {}
+}
 
 function getSubtopicTrackSessionKey(configId: string, userId: string, subtopicId: string): string {
   return `tracked_subtopic_${configId}_${userId}_${subtopicId}`;
@@ -706,6 +733,54 @@ export default function Roadmap() {
     [configs, configId]
   );
   const isConfigReady = !!configId && !!activeConfig;
+  const [allowVersionFetch, setAllowVersionFetch] = useState(true);
+  const [allowCompletionFetch, setAllowCompletionFetch] = useState(true);
+  const [allowLatestFetch, setAllowLatestFetch] = useState(true);
+
+  useEffect(() => {
+    if (!isConfigReady || !configId) {
+      setAllowVersionFetch(true);
+      return;
+    }
+    const remaining = getRemainingCooldownMs("version", configId);
+    if (remaining <= 0) {
+      setAllowVersionFetch(true);
+      return;
+    }
+    setAllowVersionFetch(false);
+    const t = window.setTimeout(() => setAllowVersionFetch(true), remaining);
+    return () => window.clearTimeout(t);
+  }, [isConfigReady, configId]);
+
+  useEffect(() => {
+    if (!isConfigReady || !configId) {
+      setAllowCompletionFetch(true);
+      return;
+    }
+    const remaining = getRemainingCooldownMs("completion", configId);
+    if (remaining <= 0) {
+      setAllowCompletionFetch(true);
+      return;
+    }
+    setAllowCompletionFetch(false);
+    const t = window.setTimeout(() => setAllowCompletionFetch(true), remaining);
+    return () => window.clearTimeout(t);
+  }, [isConfigReady, configId]);
+
+  useEffect(() => {
+    if (!isConfigReady || !configId) {
+      setAllowLatestFetch(true);
+      return;
+    }
+    const remaining = getRemainingCooldownMs("latest", configId);
+    if (remaining <= 0) {
+      setAllowLatestFetch(true);
+      return;
+    }
+    setAllowLatestFetch(false);
+    const t = window.setTimeout(() => setAllowLatestFetch(true), remaining);
+    return () => window.clearTimeout(t);
+  }, [isConfigReady, configId]);
   const universityLabel = activeConfig
     ? (universities.find((u) => u.id === activeConfig.universityId)?.name ?? activeConfig.universityId)
     : "";
@@ -730,12 +805,17 @@ export default function Roadmap() {
     }
   );
   const { data: configVersion } = useGetConfigVersion(isConfigReady ? configId : null, {
-    enabled: isConfigReady,
+    enabled: isConfigReady && allowVersionFetch,
     refetchOnWindowFocus: false,
     refetchInterval: 5 * 60 * 1000,
     staleTime: 0,
     gcTime: 5 * 60 * 1000,
   });
+  useEffect(() => {
+    if (configVersion && configId) {
+      markCooldownNow("version", configId);
+    }
+  }, [configVersion, configId]);
   const lastConfigVersionRef = useRef<string | null>(null);
   useEffect(() => {
     const parts = [
@@ -855,11 +935,21 @@ export default function Roadmap() {
   const viewer = getStoredUser();
   const isStudentViewer = !!viewer && (viewer.role === "student" || viewer.role === "super_student");
   const { data: latestInteractionState, isLoading: isLatestInteractionLoading } = useGetLatestInteractionState(
-    isStudentViewer && isConfigReady ? configId : null
+    isStudentViewer && isConfigReady && allowLatestFetch ? configId : null
   );
+  useEffect(() => {
+    if (latestInteractionState && configId) {
+      markCooldownNow("latest", configId);
+    }
+  }, [latestInteractionState, configId]);
   const { data: completionState } = useGetCompletionState(
-    isStudentViewer && isConfigReady ? configId : null
+    isStudentViewer && isConfigReady && allowCompletionFetch ? configId : null
   );
+  useEffect(() => {
+    if (completionState && configId) {
+      markCooldownNow("completion", configId);
+    }
+  }, [completionState, configId]);
   const [expandedListUnitIds, setExpandedListUnitIds] = useState<Set<string>>(new Set());
   const [expandedListTopicIds, setExpandedListTopicIds] = useState<Set<string>>(new Set());
   const [expandedMobileUnitIds, setExpandedMobileUnitIds] = useState<Set<string>>(new Set());
