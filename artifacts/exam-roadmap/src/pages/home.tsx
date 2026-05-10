@@ -124,7 +124,7 @@ export default function Home() {
   });
   const { data: configsVersion } = useGetConfigsVersion(selectedUni || null, {
     enabled: !!selectedUni,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     refetchInterval: 5 * 60 * 1000,
     staleTime: 0,
     gcTime: 5 * 60 * 1000,
