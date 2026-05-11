@@ -12,10 +12,15 @@ app.use(
     logger,
     serializers: {
       req(req) {
+        const forwardedFor = String(req.headers["x-forwarded-for"] || "").trim();
+        const realIp = String(req.headers["x-real-ip"] || "").trim();
+        const clientIp = forwardedFor.split(",")[0]?.trim() || realIp || req.ip || req.socket.remoteAddress;
         return {
           id: req.id,
           method: req.method,
           url: req.url?.split("?")[0],
+          ip: clientIp || "unknown",
+          xForwardedFor: forwardedFor || undefined,
         };
       },
       res(res) {

@@ -7,6 +7,28 @@ import { getJwtRequestAuth } from "../lib/requestAuth";
 const router: IRouter = Router();
 const TOPIC_INTERACTION_PREFIX = "__topic__:";
 const QUESTION_BANK_EVENT_PREFIX = "__qb__:";
+const EVENTS_MAX_DB_RETRIES = 2;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableDbError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const anyErr = error as { code?: string; message?: string };
+  const code = String(anyErr.code || "").trim();
+  // Common transient connection/pool/network errors around cold starts.
+  if (["57P01", "57P02", "57P03", "53300", "08000", "08003", "08006", "ECONNRESET", "ETIMEDOUT"].includes(code)) {
+    return true;
+  }
+  const message = String(anyErr.message || "").toLowerCase();
+  return (
+    message.includes("timeout") ||
+    message.includes("connection terminated") ||
+    message.includes("connection reset") ||
+    message.includes("too many clients")
+  );
+}
 
 const TrackEventBody = z
   .object({
@@ -40,6 +62,7 @@ const TrackEventBody = z
 
 router.get("/configs/:configId/latest-interaction-state", async (req, res) => {
   try {
+    res.setHeader("Cache-Control", "private, max-age=5");
     const auth = getJwtRequestAuth(req);
     const authUserId = auth?.userId || "";
     if (!authUserId) {
@@ -102,6 +125,7 @@ router.get("/configs/:configId/latest-interaction-state", async (req, res) => {
 
 router.get("/configs/:configId/completion-state", async (req, res) => {
   try {
+    res.setHeader("Cache-Control", "private, max-age=5");
     const auth = getJwtRequestAuth(req);
     const authUserId = auth?.userId || "";
     if (!authUserId) {
@@ -174,57 +198,79 @@ router.post("/events", async (req, res) => {
     const persistedTopicId = isQuestionEvent ? (topicId || `${QUESTION_BANK_EVENT_PREFIX}${questionId}`) : topicId;
     const persistedSubtopicId = isQuestionEvent ? (subtopicId || "") : subtopicId;
 
-    const result = await withRequestDbContext(auth.claims, async (tx) => {
-      const [authUser] = await tx
-        .select({
-          id: usersTable.id,
-          universityId: usersTable.universityId,
-          batch: usersTable.batch,
-          year: usersTable.year,
-          branch: usersTable.branch,
-          role: usersTable.role,
-        })
-        .from(usersTable)
-        .where(eq(usersTable.id, authUserId))
-        .limit(1);
+    let result:
+      | { status: "invalid_user" }
+      | { status: "skipped" }
+      | { status: "invalid_event_payload" }
+      | { status: "inserted" };
 
-      if (!authUser) {
-        return { status: "invalid_user" as const };
+    for (let attempt = 0; attempt <= EVENTS_MAX_DB_RETRIES; attempt += 1) {
+      try {
+        result = await withRequestDbContext(auth.claims, async (tx) => {
+          const [authUser] = await tx
+            .select({
+              id: usersTable.id,
+              universityId: usersTable.universityId,
+              batch: usersTable.batch,
+              year: usersTable.year,
+              branch: usersTable.branch,
+              role: usersTable.role,
+            })
+            .from(usersTable)
+            .where(eq(usersTable.id, authUserId))
+            .limit(1);
+
+          if (!authUser) {
+            return { status: "invalid_user" as const };
+          }
+
+          // Admins can preview student flow, but must not pollute progress analytics.
+          if (authUser.role === "admin") {
+            return { status: "skipped" as const };
+          }
+
+          let resolvedExam = String(body.exam || "").trim();
+          if (!resolvedExam) {
+            const [config] = await tx
+              .select({ exam: configsTable.exam })
+              .from(configsTable)
+              .where(eq(configsTable.id, body.configId))
+              .limit(1);
+            resolvedExam = String(config?.exam || "").trim();
+          }
+          if (!resolvedExam) {
+            return { status: "invalid_event_payload" as const };
+          }
+
+          await tx.insert(eventsTable).values({
+            userId: authUser.id,
+            universityId: authUser.universityId,
+            batch: String(authUser.batch || "").trim() || "2025",
+            year: authUser.year,
+            branch: authUser.branch,
+            exam: resolvedExam,
+            configId: body.configId,
+            topicId: persistedTopicId || null,
+            subtopicId: persistedSubtopicId,
+            questionId: questionId || null,
+          });
+
+          return { status: "inserted" as const };
+        });
+        break;
+      } catch (err) {
+        const retryable = isRetryableDbError(err);
+        const canRetry = retryable && attempt < EVENTS_MAX_DB_RETRIES;
+        if (!canRetry) throw err;
+        const delayMs = 150 * (attempt + 1);
+        req.log.warn({ err, attempt: attempt + 1, delayMs }, "Retrying /events after transient DB error");
+        await sleep(delayMs);
       }
+    }
 
-      // Admins can preview student flow, but must not pollute progress analytics.
-      if (authUser.role === "admin") {
-        return { status: "skipped" as const };
-      }
-
-      let resolvedExam = String(body.exam || "").trim();
-      if (!resolvedExam) {
-        const [config] = await tx
-          .select({ exam: configsTable.exam })
-          .from(configsTable)
-          .where(eq(configsTable.id, body.configId))
-          .limit(1);
-        resolvedExam = String(config?.exam || "").trim();
-      }
-      if (!resolvedExam) {
-        return { status: "invalid_event_payload" as const };
-      }
-
-      await tx.insert(eventsTable).values({
-        userId: authUser.id,
-        universityId: authUser.universityId,
-        batch: String(authUser.batch || "").trim() || "2025",
-        year: authUser.year,
-        branch: authUser.branch,
-        exam: resolvedExam,
-        configId: body.configId,
-        topicId: persistedTopicId || null,
-        subtopicId: persistedSubtopicId,
-        questionId: questionId || null,
-      });
-
-      return { status: "inserted" as const };
-    });
+    if (!result) {
+      throw new Error("Event insert did not produce a result.");
+    }
 
     if (result.status === "invalid_user") {
       res.status(200).json({ success: true, skipped: true, reason: "invalid_user" });

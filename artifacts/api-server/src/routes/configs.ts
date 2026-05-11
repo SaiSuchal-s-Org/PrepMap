@@ -178,6 +178,7 @@ router.get("/configs", async (req, res) => {
 
 router.get("/configs/version", async (req, res) => {
   try {
+    res.setHeader("Cache-Control", "private, max-age=5");
     const universityId = String(req.query.universityId || "").trim();
     const auth = getJwtRequestAuth(req);
     const userId = auth?.userId || "";
@@ -241,6 +242,7 @@ router.get("/configs/version", async (req, res) => {
 
 router.get("/configs/:id/version", async (req, res) => {
   try {
+    res.setHeader("Cache-Control", "private, max-age=5");
     const id = String(req.params.id || "").trim();
     if (!id) {
       res.status(400).json({ error: "Config id is required" });
