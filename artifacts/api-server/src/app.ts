@@ -10,11 +10,18 @@ const bodyLimit = process.env["API_BODY_LIMIT"] || "25mb";
 app.use(
   pinoHttp({
     logger,
+    wrapSerializers: false,
     serializers: {
       req(req) {
         const forwardedFor = String(req.headers["x-forwarded-for"] || "").trim();
         const realIp = String(req.headers["x-real-ip"] || "").trim();
-        const clientIp = forwardedFor.split(",")[0]?.trim() || realIp || req.ip || req.socket.remoteAddress;
+        const clientIp =
+          forwardedFor.split(",")[0]?.trim() ||
+          realIp ||
+          req.ip ||
+          req.socket?.remoteAddress ||
+          (req as any).connection?.remoteAddress ||
+          undefined;
         return {
           id: req.id,
           method: req.method,
