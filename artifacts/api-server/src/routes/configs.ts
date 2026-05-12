@@ -102,7 +102,18 @@ router.get("/configs", async (req, res) => {
     let userUniversityId: string | null = null;
     let userYear: string | null = null;
     let userBranch: string | null = null;
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const [user] = await db
+      .select({
+        id: usersTable.id,
+        role: usersTable.role,
+        universityId: usersTable.universityId,
+        batch: usersTable.batch,
+        year: usersTable.year,
+        branch: usersTable.branch,
+      })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
     if (!user) {
       res.status(401).json({ error: "Invalid user." });
       return;
@@ -187,7 +198,18 @@ router.get("/configs/version", async (req, res) => {
       return;
     }
 
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const [user] = await db
+      .select({
+        id: usersTable.id,
+        role: usersTable.role,
+        universityId: usersTable.universityId,
+        batch: usersTable.batch,
+        year: usersTable.year,
+        branch: usersTable.branch,
+      })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
     if (!user) {
       res.status(401).json({ error: "Invalid user." });
       return;
@@ -318,22 +340,30 @@ router.get("/configs/:id/version", async (req, res) => {
       }
     }
 
-    const [agg] = await withRequestDbContext(auth.claims, async (tx) =>
-      tx
-        .select({
-          nodesUpdatedAt: sql<string | null>`max(${nodesTable.updatedAt})`,
-          questionBankUpdatedAt: sql<string | null>`max(${configQuestionsTable.updatedAt})`,
-        })
-        .from(nodesTable)
-        .leftJoin(configQuestionsTable, eq(configQuestionsTable.configId, nodesTable.configId))
-        .where(eq(nodesTable.configId, id))
+    const [nodesAgg, questionsAgg] = await withRequestDbContext(auth.claims, async (tx) =>
+      Promise.all([
+        tx
+          .select({
+            nodesUpdatedAt: sql<string | null>`max(${nodesTable.updatedAt})`,
+          })
+          .from(nodesTable)
+          .where(eq(nodesTable.configId, id))
+          .limit(1),
+        tx
+          .select({
+            questionBankUpdatedAt: sql<string | null>`max(${configQuestionsTable.updatedAt})`,
+          })
+          .from(configQuestionsTable)
+          .where(eq(configQuestionsTable.configId, id))
+          .limit(1),
+      ])
     );
 
     res.json({
       configId: id,
       configUpdatedAt: config.updatedAt?.toISOString?.() ?? null,
-      nodesUpdatedAt: agg?.nodesUpdatedAt ?? null,
-      questionBankUpdatedAt: agg?.questionBankUpdatedAt ?? null,
+      nodesUpdatedAt: nodesAgg?.[0]?.nodesUpdatedAt ?? null,
+      questionBankUpdatedAt: questionsAgg?.[0]?.questionBankUpdatedAt ?? null,
     });
   } catch (error) {
     req.log.error({ err: error }, "Failed to fetch config version");

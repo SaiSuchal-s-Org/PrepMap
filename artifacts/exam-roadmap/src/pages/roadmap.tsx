@@ -9,7 +9,6 @@ import {
 import {
   useGetAppMetadata,
   useGetConfigs,
-  useGetConfigVersion,
   useGetLatestInteractionState,
   useGetCompletionState,
   useGetNodes,
@@ -733,24 +732,8 @@ export default function Roadmap() {
     [configs, configId]
   );
   const isConfigReady = !!configId && !!activeConfig;
-  const [allowVersionFetch, setAllowVersionFetch] = useState(true);
   const [allowCompletionFetch, setAllowCompletionFetch] = useState(true);
   const [allowLatestFetch, setAllowLatestFetch] = useState(true);
-
-  useEffect(() => {
-    if (!isConfigReady || !configId) {
-      setAllowVersionFetch(true);
-      return;
-    }
-    const remaining = getRemainingCooldownMs("version", configId);
-    if (remaining <= 0) {
-      setAllowVersionFetch(true);
-      return;
-    }
-    setAllowVersionFetch(false);
-    const t = window.setTimeout(() => setAllowVersionFetch(true), remaining);
-    return () => window.clearTimeout(t);
-  }, [isConfigReady, configId]);
 
   useEffect(() => {
     if (!isConfigReady || !configId) {
@@ -804,45 +787,6 @@ export default function Roadmap() {
       },
     }
   );
-  const { data: configVersion } = useGetConfigVersion(isConfigReady ? configId : null, {
-    enabled: isConfigReady && allowVersionFetch,
-    refetchOnWindowFocus: false,
-    refetchInterval: 5 * 60 * 1000,
-    staleTime: 0,
-    gcTime: 5 * 60 * 1000,
-  });
-  useEffect(() => {
-    if (configVersion && configId) {
-      markCooldownNow("version", configId);
-    }
-  }, [configVersion, configId]);
-  const lastConfigVersionRef = useRef<string | null>(null);
-  useEffect(() => {
-    const parts = [
-      String(configVersion?.configUpdatedAt || "").trim(),
-      String(configVersion?.nodesUpdatedAt || "").trim(),
-      String(configVersion?.questionBankUpdatedAt || "").trim(),
-    ];
-    const next = parts.join("|");
-    if (!next.replace(/\|/g, "")) return;
-    if (lastConfigVersionRef.current == null) {
-      lastConfigVersionRef.current = next;
-      return;
-    }
-    if (lastConfigVersionRef.current !== next) {
-      lastConfigVersionRef.current = next;
-      void queryClient.invalidateQueries({ queryKey: ["nodes", "roadmap", configId] });
-      void queryClient.invalidateQueries({ queryKey: ["topic-content-bundle"] });
-      void queryClient.invalidateQueries({ queryKey: ["config-question-bank", configId] });
-    }
-  }, [
-    configId,
-    configVersion?.configUpdatedAt,
-    configVersion?.nodesUpdatedAt,
-    configVersion?.questionBankUpdatedAt,
-    queryClient,
-  ]);
-
   const tree = useMemo(() => (nodes ? buildTree(nodes) : []), [nodes]);
   const [collapsedTopicIds, setCollapsedTopicIds] = useState<Set<string>>(new Set());
   const [collapsedUnitIds, setCollapsedUnitIds] = useState<Set<string>>(new Set());
@@ -2800,6 +2744,7 @@ function ContentModal({
     if (sessionStorage.getItem(dedupeKey)) return;
     if (isTracked) return;
     if (trackTimerRef.current) return;
+    const occurredAt = new Date().toISOString();
 
     // QB-like interaction condition: once content is opened for enough time,
     // count it as interacted without requiring scroll-to-bottom.
@@ -2817,6 +2762,7 @@ function ContentModal({
           configId,
           topicId: node.parentId || "",
           subtopicId: node.id,
+          occurredAt,
         }
       }, {
         onSuccess: () => {
@@ -3661,6 +3607,7 @@ function QuestionBankModal({
     const sessionKey = questionSessionKey(questionId);
     if (sessionStorage.getItem(sessionKey)) return;
     if (answerTimersRef.current.has(questionId)) return;
+    const occurredAt = new Date().toISOString();
 
     const timer = setTimeout(() => {
       answerTimersRef.current.delete(questionId);
@@ -3678,6 +3625,7 @@ function QuestionBankModal({
             topicId: `${QUESTION_BANK_EVENT_PREFIX}${questionId}`,
             subtopicId: String(subtopicId || "").trim() || undefined,
             questionId: String(questionId),
+            occurredAt,
           },
         },
         {
@@ -4295,6 +4243,7 @@ function QuestionBankPane({
     if (!user || (user.role !== "student" && user.role !== "super_student")) return;
     const sessionKey = questionSessionKey(selectedQuestion.id);
     if (sessionStorage.getItem(sessionKey)) return;
+    const occurredAt = new Date().toISOString();
     const existing = answerTimersRef.current.get(selectedQuestion.id);
     if (existing) clearTimeout(existing);
 
@@ -4313,6 +4262,7 @@ function QuestionBankPane({
             topicId: `${QUESTION_BANK_EVENT_PREFIX}${selectedQuestion.id}`,
             subtopicId: String(selectedQuestion.subtopicId || "").trim() || undefined,
             questionId: String(selectedQuestion.id),
+            occurredAt,
           },
         },
         {

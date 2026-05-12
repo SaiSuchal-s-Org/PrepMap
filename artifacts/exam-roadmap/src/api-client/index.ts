@@ -1382,8 +1382,8 @@ export const useGetLatestInteractionState = <
     enabled: !!configId,
     staleTime: 0,
     gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
     ...options,
   });
 };
@@ -1401,8 +1401,8 @@ export const useGetCompletionState = <
     enabled: !!configId,
     staleTime: 0,
     gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
     ...options,
   });
 };

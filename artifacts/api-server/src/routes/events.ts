@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { configsTable, eventsTable, usersTable, withRequestDbContext } from "../db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { getJwtRequestAuth } from "../lib/requestAuth";
 
@@ -42,6 +42,7 @@ const TrackEventBody = z
     topicId: z.string().trim().optional().nullable(),
     subtopicId: z.string().trim().optional().nullable(),
     questionId: z.string().trim().optional().nullable(),
+    occurredAt: z.string().trim().optional().nullable(),
   })
   .superRefine((value, ctx) => {
     const questionId = String(value.questionId || "").trim();
@@ -76,46 +77,86 @@ router.get("/configs/:configId/latest-interaction-state", async (req, res) => {
       return;
     }
 
-    const latestEvents = await withRequestDbContext(auth.claims, async (tx) =>
-      tx
-        .select({
-          topicId: eventsTable.topicId,
-          subtopicId: eventsTable.subtopicId,
-          questionId: eventsTable.questionId,
-          timestamp: eventsTable.timestamp,
-        })
-        .from(eventsTable)
-        .where(and(eq(eventsTable.userId, authUserId), eq(eventsTable.configId, configId)))
-        .orderBy(desc(eventsTable.timestamp))
-        .limit(25)
+    const [latestMapRows, latestQbRows] = await withRequestDbContext(auth.claims, async (tx) =>
+      Promise.all([
+        tx
+          .select({
+            topicId: eventsTable.topicId,
+            subtopicId: eventsTable.subtopicId,
+            timestamp: eventsTable.timestamp,
+          })
+          .from(eventsTable)
+          .where(
+            and(
+              eq(eventsTable.userId, authUserId),
+              eq(eventsTable.configId, configId),
+              sql`(
+                coalesce(trim(${eventsTable.subtopicId}), '') LIKE ${TOPIC_INTERACTION_PREFIX + "%"}
+                OR (
+                  coalesce(trim(${eventsTable.subtopicId}), '') <> ''
+                  AND coalesce(trim(${eventsTable.subtopicId}), '') NOT LIKE ${TOPIC_INTERACTION_PREFIX + "%"}
+                  AND coalesce(trim(${eventsTable.topicId}), '') NOT LIKE ${QUESTION_BANK_EVENT_PREFIX + "%"}
+                )
+              )`,
+            ),
+          )
+          .orderBy(desc(eventsTable.timestamp))
+          .limit(1),
+        tx
+          .select({
+            topicId: eventsTable.topicId,
+            subtopicId: eventsTable.subtopicId,
+            questionId: eventsTable.questionId,
+            timestamp: eventsTable.timestamp,
+          })
+          .from(eventsTable)
+          .where(
+            and(
+              eq(eventsTable.userId, authUserId),
+              eq(eventsTable.configId, configId),
+              sql`(
+                coalesce(trim(${eventsTable.questionId}), '') <> ''
+                OR coalesce(trim(${eventsTable.topicId}), '') LIKE ${QUESTION_BANK_EVENT_PREFIX + "%"}
+              )`,
+            ),
+          )
+          .orderBy(desc(eventsTable.timestamp))
+          .limit(1),
+      ]),
     );
 
-    const row = latestEvents[0];
-    const latest = latestEvents.find((e) => (
-      !!String(e.questionId || "").trim() || !!String(e.subtopicId || "").trim()
-    )) || null;
-    const rawSubtopicId = String(latest?.subtopicId || "").trim();
-    const rawQuestionId = String(latest?.questionId || "").trim();
-    const isTopicInteraction = rawSubtopicId.startsWith(TOPIC_INTERACTION_PREFIX);
-    const derivedTopicFromPrefix = isTopicInteraction
-      ? rawSubtopicId.slice(TOPIC_INTERACTION_PREFIX.length).trim()
+    const latestMap = latestMapRows[0] ?? null;
+    const latestQb = latestQbRows[0] ?? null;
+
+    const mapRawSubtopicId = String(latestMap?.subtopicId || "").trim();
+    const mapIsTopicInteraction = mapRawSubtopicId.startsWith(TOPIC_INTERACTION_PREFIX);
+    const mapDerivedTopicFromPrefix = mapIsTopicInteraction
+      ? mapRawSubtopicId.slice(TOPIC_INTERACTION_PREFIX.length).trim()
       : "";
-    const mapNodeId = isTopicInteraction
-      ? (derivedTopicFromPrefix || String(latest?.topicId || "").trim() || null)
+    const mapNodeId = mapIsTopicInteraction
+      ? (mapDerivedTopicFromPrefix || String(latestMap?.topicId || "").trim() || null)
+      : (mapRawSubtopicId || null);
+
+    const qbRawSubtopicId = String(latestQb?.subtopicId || "").trim();
+    const qbRawQuestionId = String(latestQb?.questionId || "").trim();
+    const qbQuestionIdFromTopic = String(latestQb?.topicId || "").trim().startsWith(QUESTION_BANK_EVENT_PREFIX)
+      ? Number(String(latestQb?.topicId || "").trim().slice(QUESTION_BANK_EVENT_PREFIX.length))
       : null;
-    const qbSubtopicId = isTopicInteraction ? null : (rawSubtopicId || null);
-    const qbQuestionIdFromTopic = String(latest?.topicId || "").trim().startsWith(QUESTION_BANK_EVENT_PREFIX)
-      ? Number(String(latest?.topicId || "").trim().slice(QUESTION_BANK_EVENT_PREFIX.length))
-      : null;
-    const qbQuestionId = rawQuestionId ? Number(rawQuestionId) : qbQuestionIdFromTopic;
+    const qbQuestionId = qbRawQuestionId ? Number(qbRawQuestionId) : qbQuestionIdFromTopic;
+
+    const mapEventAt = latestMap?.timestamp ? new Date(latestMap.timestamp).toISOString() : null;
+    const qbEventAt = latestQb?.timestamp ? new Date(latestQb.timestamp).toISOString() : null;
+    const eventAt = qbEventAt || mapEventAt || null;
 
     res.status(200).json({
       configId,
       userId: authUserId,
       mapNodeId,
-      qbSubtopicId,
+      qbSubtopicId: qbRawSubtopicId || null,
       qbQuestionId: Number.isFinite(qbQuestionId) ? qbQuestionId : null,
-      eventAt: latest?.timestamp ? new Date(latest.timestamp).toISOString() : null,
+      mapEventAt,
+      qbEventAt,
+      eventAt,
     });
   } catch (error) {
     req.log.error({ err: error }, "Failed to fetch latest interaction state");
@@ -143,30 +184,23 @@ router.get("/configs/:configId/completion-state", async (req, res) => {
       tx
         .select({
           subtopicId: eventsTable.subtopicId,
-          topicId: eventsTable.topicId,
         })
         .from(eventsTable)
-        .where(and(eq(eventsTable.userId, authUserId), eq(eventsTable.configId, configId)))
+        .where(
+          and(
+            eq(eventsTable.userId, authUserId),
+            eq(eventsTable.configId, configId),
+            sql`coalesce(trim(${eventsTable.subtopicId}), '') <> ''`,
+            sql`coalesce(trim(${eventsTable.subtopicId}), '') NOT LIKE ${TOPIC_INTERACTION_PREFIX + "%"}`,
+            sql`coalesce(trim(${eventsTable.topicId}), '') NOT LIKE ${QUESTION_BANK_EVENT_PREFIX + "%"}`,
+          ),
+        )
+        .groupBy(eventsTable.subtopicId)
     );
 
-    const doneSubtopicIds = Array.from(
-      new Set(
-        rows
-          .map((r) => ({
-            subtopicId: String(r.subtopicId || "").trim(),
-            topicId: String(r.topicId || "").trim(),
-          }))
-          .filter((r) => {
-            const id = r.subtopicId;
-            const topicId = r.topicId;
-            if (!id) return false;
-            if (id.startsWith(TOPIC_INTERACTION_PREFIX)) return false;
-            if (topicId.startsWith(QUESTION_BANK_EVENT_PREFIX)) return false;
-            return true;
-          })
-          .map((r) => r.subtopicId),
-      ),
-    );
+    const doneSubtopicIds = rows
+      .map((r) => String(r.subtopicId || "").trim())
+      .filter(Boolean);
 
     res.status(200).json({
       configId,
@@ -193,6 +227,11 @@ router.post("/events", async (req, res) => {
     const topicId = String(body.topicId || "").trim();
     const subtopicId = String(body.subtopicId || "").trim();
     const questionId = String(body.questionId || "").trim();
+    const occurredAtRaw = String(body.occurredAt || "").trim();
+    const occurredAtDate =
+      occurredAtRaw && !Number.isNaN(new Date(occurredAtRaw).getTime())
+        ? new Date(occurredAtRaw)
+        : null;
 
     const isQuestionEvent = !!questionId;
     const persistedTopicId = isQuestionEvent ? (topicId || `${QUESTION_BANK_EVENT_PREFIX}${questionId}`) : topicId;
@@ -253,6 +292,7 @@ router.post("/events", async (req, res) => {
             topicId: persistedTopicId || null,
             subtopicId: persistedSubtopicId,
             questionId: questionId || null,
+            timestamp: occurredAtDate ?? new Date(),
           });
 
           return { status: "inserted" as const };

@@ -216,6 +216,7 @@ export default function Subtopic() {
     
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
+        const occurredAt = new Date().toISOString();
         timeoutId = setTimeout(() => {
           if (!sessionStorage.getItem(`tracked_${id}`)) {
             trackEventMutation.mutate({
@@ -227,7 +228,8 @@ export default function Subtopic() {
                 exam: examParam,
                 configId,
                 topicId,
-                subtopicId: id
+                subtopicId: id,
+                occurredAt,
               }
             }, {
               onSuccess: () => {

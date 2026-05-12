@@ -216,6 +216,7 @@ export interface EventPayload {
   topicId?: string | null;
   subtopicId?: string | null;
   questionId?: string | null;
+  occurredAt?: string | null;
 }
 
 export interface SubtopicStat {
