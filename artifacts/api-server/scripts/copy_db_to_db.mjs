@@ -53,7 +53,7 @@ function buildInsertSql(tableName, columns, rowCount) {
     const placeholders = columns.map((_, colIdx) => `$${rowIdx * columns.length + colIdx + 1}`);
     return `(${placeholders.join(", ")})`;
   }).join(", ");
-  return `INSERT INTO ${quote("public")}.${quote(tableName)} (${colSql}) VALUES ${valuesSql}`;
+  return `INSERT INTO ${quote("public")}.${quote(tableName)} (${colSql}) VALUES ${valuesSql} ON CONFLICT DO NOTHING`;
 }
 
 async function getPublicTables(client) {
@@ -277,7 +277,6 @@ async function run() {
 
     await ensureTargetTables(source, target, sourceTables);
 
-    await target.query("BEGIN");
     await maybeTruncateTarget(target, sourceTables);
 
     for (const tableName of sourceTables) {
@@ -288,33 +287,45 @@ async function run() {
       }
 
       const colNames = columnsMeta.map((c) => c.columnName);
-      const selectSql = `SELECT ${colNames.map((c) => quote(c)).join(", ")} FROM ${quote("public")}.${quote(tableName)}`;
-      const { rows } = await source.query(selectSql);
+      const pkCols = await getPrimaryKeyColumns(source, tableName);
+      const orderCols = (pkCols.length > 0 ? pkCols : [colNames[0]])
+        .map((c) => quote(c))
+        .join(", ");
+      let copiedRows = 0;
+      let offset = 0;
 
-      if (rows.length === 0) {
-        summary.push({ table: tableName, rows: 0 });
-        console.log(`Copied ${tableName}: 0 rows`);
-        continue;
-      }
+      while (true) {
+        const selectSql = `
+          SELECT ${colNames.map((c) => quote(c)).join(", ")}
+          FROM ${quote("public")}.${quote(tableName)}
+          ORDER BY ${orderCols}
+          LIMIT $1 OFFSET $2
+        `;
+        const { rows } = await source.query(selectSql, [batchSize, offset]);
+        if (rows.length === 0) break;
 
-      for (let i = 0; i < rows.length; i += batchSize) {
-        const batch = rows.slice(i, i + batchSize);
-        const insertSql = buildInsertSql(tableName, colNames, batch.length);
+        const insertSql = buildInsertSql(tableName, colNames, rows.length);
         const values = [];
-        for (const row of batch) {
+        for (const row of rows) {
           for (const c of columnsMeta) {
             values.push(normalizeValue(row[c.columnName], c.udtName, c.dataType));
           }
         }
         await target.query(insertSql, values);
+        copiedRows += rows.length;
+        offset += rows.length;
       }
 
-      summary.push({ table: tableName, rows: rows.length });
-      console.log(`Copied ${tableName}: ${rows.length} rows`);
+      if (copiedRows === 0) {
+        summary.push({ table: tableName, rows: 0 });
+        console.log(`Copied ${tableName}: 0 rows`);
+        continue;
+      }
+      summary.push({ table: tableName, rows: copiedRows });
+      console.log(`Copied ${tableName}: ${copiedRows} rows`);
     }
 
     await resetSequences(target);
-    await target.query("COMMIT");
 
     const totalRows = summary.reduce((sum, s) => sum + s.rows, 0);
     console.log("\nCopy complete.");
@@ -322,9 +333,6 @@ async function run() {
     console.log(`Total rows copied: ${totalRows}`);
     console.log(`Elapsed: ${((Date.now() - startedAt) / 1000).toFixed(2)}s`);
   } catch (error) {
-    try {
-      await target.query("ROLLBACK");
-    } catch {}
     if (error && typeof error === "object") {
       const anyErr = error;
       console.error("DB copy failed:", {

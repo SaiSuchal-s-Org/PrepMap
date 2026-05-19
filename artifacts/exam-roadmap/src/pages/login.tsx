@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation, Link } from "wouter";
-import { Zap, GraduationCap, Lock, ArrowRight } from "lucide-react";
+import { Zap, GraduationCap, Lock, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { motion } from "framer-motion";
 import { useLogin } from "@/api-client";
 import { setStoredUser, getStoredUser } from "@/lib/auth";
@@ -11,6 +11,8 @@ export default function Login() {
   const [, setLocation] = useLocation();
   const [collegeId, setCollegeId] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isCapsLockOn, setIsCapsLockOn] = useState(false);
   const loginMutation = useLogin();
 
   useEffect(() => {
@@ -73,14 +75,14 @@ export default function Login() {
             <h1 className="text-3xl font-display font-bold text-foreground">
               Welcome to <span className="text-primary">PrepMap</span>
             </h1>
-            <p className="mt-2 text-muted-foreground text-sm">Sign in with your college credentials to access your exam roadmap.</p>
+            <p className="mt-2 text-muted-foreground text-sm">Sign in with your credentials to access your exam roadmap.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
               <label className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <GraduationCap className="w-4 h-4 text-primary" />
-                College Roll ID
+                ID
               </label>
               <Input
                 placeholder="e.g. STU001"
@@ -96,13 +98,31 @@ export default function Login() {
                 <Lock className="w-4 h-4 text-primary" />
                 Password
               </label>
-              <Input
-                type="password"
-                placeholder="Enter your password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="bg-white/50 focus:bg-white"
-              />
+              <div className="relative">
+                <Input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyUp={(e) => setIsCapsLockOn(e.getModifierState("CapsLock"))}
+                  onKeyDown={(e) => setIsCapsLockOn(e.getModifierState("CapsLock"))}
+                  onBlur={() => setIsCapsLockOn(false)}
+                  className="bg-white/50 pr-11 focus:bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {isCapsLockOn && (
+                <p className="text-xs font-medium text-amber-700">
+                  Caps Lock is ON
+                </p>
+              )}
             </div>
 
             <Button 
