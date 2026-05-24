@@ -66,6 +66,14 @@ export async function withRequestDbContext<T>(
 }
 
 export async function initializeDatabase(): Promise<void> {
+  const runBestEffort = async (label: string, statement: string) => {
+    try {
+      await pool.query(statement);
+    } catch (error) {
+      console.warn(`[db:init] non-fatal step skipped: ${label}`, error);
+    }
+  };
+
   await pool.query(`CREATE SCHEMA IF NOT EXISTS app;`);
 
   await pool.query(`
@@ -314,40 +322,6 @@ export async function initializeDatabase(): Promise<void> {
   `);
 
   await pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns c
-        WHERE c.table_schema = 'public'
-          AND c.table_name = 'users'
-          AND c.column_name = 'account_type'
-      ) THEN
-        EXECUTE '
-          UPDATE public.users
-          SET role = ''super_student''
-          WHERE role = ''student'' AND account_type = ''super_student''
-        ';
-      END IF;
-    END $$;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    DROP COLUMN IF EXISTS account_type;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    ALTER COLUMN role DROP DEFAULT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.events
-    DROP COLUMN IF EXISTS account_type;
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS public.auth_sessions (
       id text PRIMARY KEY,
       user_id text NOT NULL,
@@ -478,12 +452,6 @@ export async function initializeDatabase(): Promise<void> {
   `);
 
   await pool.query(`
-    UPDATE public.canonical_nodes
-    SET normalized_title = regexp_replace(lower(trim(title)), '[^a-z0-9\\s]+', ' ', 'g')
-    WHERE normalized_title IS NULL OR btrim(normalized_title) = '';
-  `);
-
-  await pool.query(`
     ALTER TABLE public.nodes
     ADD COLUMN IF NOT EXISTS canonical_node_id text;
   `);
@@ -499,12 +467,6 @@ export async function initializeDatabase(): Promise<void> {
   `);
 
   await pool.query(`
-    UPDATE public.nodes
-    SET normalized_title = regexp_replace(lower(trim(title)), '[^a-z0-9\\s]+', ' ', 'g')
-    WHERE normalized_title IS NULL OR btrim(normalized_title) = '';
-  `);
-
-  await pool.query(`
     ALTER TABLE IF EXISTS public.nodes
     ADD COLUMN IF NOT EXISTS created_at timestamp without time zone NOT NULL DEFAULT now();
   `);
@@ -519,201 +481,110 @@ export async function initializeDatabase(): Promise<void> {
     ADD COLUMN IF NOT EXISTS batch text NOT NULL DEFAULT '2025';
   `);
 
-  await pool.query(`
+  await runBestEffort(
+    "events_add_batch",
+    `
     ALTER TABLE IF EXISTS public.events
     ADD COLUMN IF NOT EXISTS batch text NOT NULL DEFAULT '2025';
-  `);
-
-  await pool.query(`
-    UPDATE public.users
-    SET batch = CASE
-      WHEN lower(coalesce(role, '')) IN ('student', 'super_student') THEN '2025'
-      ELSE 'ALL'
-    END
-    WHERE batch IS NULL OR btrim(batch) = '';
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    DROP CONSTRAINT IF EXISTS users_batch_required_for_learners_chk;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    ADD CONSTRAINT users_batch_required_for_learners_chk
-    CHECK (
-      CASE
-        WHEN lower(coalesce(role, '')) = 'student'
-          THEN btrim(coalesce(batch, '')) <> '' AND lower(btrim(batch)) <> 'all'
-        WHEN lower(coalesce(role, '')) = 'super_student'
-          THEN btrim(coalesce(batch, '')) <> ''
-        ELSE btrim(coalesce(batch, '')) <> ''
-      END
-    );
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    DROP CONSTRAINT IF EXISTS users_name_required_for_learners_chk;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.users
-    ADD CONSTRAINT users_name_required_for_learners_chk
-    CHECK (
-      CASE
-        WHEN lower(coalesce(role, '')) = 'student'
-          THEN btrim(coalesce(name, '')) <> ''
-        ELSE true
-      END
-    );
-  `);
-
-  await pool.query(`
-    UPDATE public.configs SET batch = '2025' WHERE batch IS NULL OR btrim(batch) = '';
-  `);
-
-  await pool.query(`
-    UPDATE public.events SET batch = '2025' WHERE batch IS NULL OR btrim(batch) = '';
-  `);
+  `,
+  );
 
   await pool.query(`
     ALTER TABLE IF EXISTS public.configs
     ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone NOT NULL DEFAULT now();
   `);
 
-  await pool.query(`
+  await runBestEffort(
+    "events_add_created_at",
+    `
     ALTER TABLE IF EXISTS public.events
     ADD COLUMN IF NOT EXISTS created_at timestamp without time zone NOT NULL DEFAULT now();
-  `);
+  `,
+  );
 
-  await pool.query(`
+  await runBestEffort(
+    "events_add_updated_at",
+    `
     ALTER TABLE IF EXISTS public.events
     ADD COLUMN IF NOT EXISTS updated_at timestamp without time zone NOT NULL DEFAULT now();
+  `,
+  );
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.config_consolidated_stats (
+      config_id text PRIMARY KEY REFERENCES public.configs(id) ON DELETE CASCADE,
+      university_id text NOT NULL,
+      batch text NOT NULL,
+      year text NOT NULL,
+      branch text NOT NULL,
+      subject text NOT NULL,
+      exam text NOT NULL,
+      status text NOT NULL,
+      total_events integer NOT NULL DEFAULT 0,
+      total_students_in_batch integer NOT NULL DEFAULT 0,
+      eligible_student_count integer NOT NULL DEFAULT 0,
+      unique_students_content integer NOT NULL DEFAULT 0,
+      unique_students_qb integer NOT NULL DEFAULT 0,
+      avg_content_consumption_pct real NOT NULL DEFAULT 0,
+      avg_qb_consumption_pct real NOT NULL DEFAULT 0,
+      students_completed_content integer NOT NULL DEFAULT 0,
+      students_completed_qb integer NOT NULL DEFAULT 0,
+      students_completed_both integer NOT NULL DEFAULT 0,
+      content_total_targets integer NOT NULL DEFAULT 0,
+      qb_total_targets integer NOT NULL DEFAULT 0,
+      snapshot_version text NOT NULL DEFAULT 'v1',
+      consolidated_at timestamp without time zone NOT NULL DEFAULT now(),
+      created_at timestamp without time zone NOT NULL DEFAULT now(),
+      updated_at timestamp without time zone NOT NULL DEFAULT now()
+    );
   `);
 
   await pool.query(`
+    CREATE INDEX IF NOT EXISTS config_consolidated_stats_university_batch_idx
+    ON public.config_consolidated_stats (university_id, batch);
+  `);
+
+  await runBestEffort(
+    "events_add_question_id",
+    `
     ALTER TABLE IF EXISTS public.events
     ADD COLUMN IF NOT EXISTS question_id text;
-  `);
+  `,
+  );
 
-  await pool.query(`
+  await runBestEffort(
+    "events_drop_topic_subtopic_not_null",
+    `
     ALTER TABLE IF EXISTS public.events
     ALTER COLUMN topic_id DROP NOT NULL,
     ALTER COLUMN subtopic_id DROP NOT NULL;
-  `);
+  `,
+  );
 
-  // Repair legacy events.id definitions where NOT NULL exists but default/identity is missing.
-  // This prevents inserts from failing with "null value in column id" when using DEFAULT.
-  await pool.query(`
-    DO $$
-    DECLARE
-      id_data_type text;
-      id_default text;
-      seq_name text;
-    BEGIN
-      SELECT c.data_type, c.column_default
-      INTO id_data_type, id_default
-      FROM information_schema.columns c
-      WHERE c.table_schema = 'public'
-        AND c.table_name = 'events'
-        AND c.column_name = 'id';
-
-      IF id_data_type IS NULL THEN
-        RETURN;
-      END IF;
-
-      -- Skip non-numeric legacy IDs (if any).
-      IF id_data_type NOT IN ('integer', 'bigint') THEN
-        RETURN;
-      END IF;
-
-      IF id_default IS NULL OR position('nextval(' in id_default) = 0 THEN
-        seq_name := 'events_id_seq';
-
-        EXECUTE format('CREATE SEQUENCE IF NOT EXISTS public.%I', seq_name);
-        EXECUTE format(
-          'SELECT setval(''public.%I'', COALESCE((SELECT MAX(id) FROM public.events), 0) + 1, false)',
-          seq_name
-        );
-        EXECUTE format(
-          'ALTER TABLE public.events ALTER COLUMN id SET DEFAULT nextval(''public.%I''::regclass)',
-          seq_name
-        );
-        EXECUTE format('ALTER SEQUENCE public.%I OWNED BY public.events.id', seq_name);
-      END IF;
-    END $$;
-  `);
-
-  await pool.query(`
+  await runBestEffort(
+    "events_question_idx",
+    `
     CREATE INDEX IF NOT EXISTS events_question_idx
     ON public.events (question_id);
-  `);
+  `,
+  );
 
-  await pool.query(`
+  await runBestEffort(
+    "events_enable_rls",
+    `
     ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
-  `);
+  `,
+  );
 
-  await pool.query(`
+  await runBestEffort(
+    "events_force_rls",
+    `
     ALTER TABLE public.events FORCE ROW LEVEL SECURITY;
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS events_select_own_or_admin ON public.events;
-  `);
-
-  await pool.query(`
-    CREATE POLICY events_select_own_or_admin
-    ON public.events
-    FOR SELECT
-    USING (
-      public.app_role() = 'admin'
-      OR user_id = public.app_user_id()
-    );
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS events_insert_own_learner ON public.events;
-  `);
-
-  await pool.query(`
-    CREATE POLICY events_insert_own_learner
-    ON public.events
-    FOR INSERT
-    WITH CHECK (
-      user_id = public.app_user_id()
-      AND public.app_role() IN ('student', 'super_student')
-    );
-  `);
+  `,
+  );
 
   await pool.query(`
     ALTER TABLE public.configs ENABLE ROW LEVEL SECURITY;
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS configs_select_policy ON public.configs;
-  `);
-
-  await pool.query(`
-    CREATE POLICY configs_select_policy
-    ON public.configs
-    FOR SELECT
-    USING (
-      public.app_role() = 'admin'
-      OR (
-        public.app_role() = 'super_student'
-        AND status = 'live'
-        AND university_id = public.app_university_id()
-      )
-      OR (
-        public.app_role() = 'student'
-        AND status = 'live'
-        AND university_id = public.app_university_id()
-        AND public.app_normalize_token(batch) = public.app_normalize_token(public.app_batch())
-        AND public.app_normalize_token(branch) = public.app_normalize_token(public.app_branch())
-        AND public.app_student_year_matches_config_year(public.app_year(), year)
-      )
-    );
   `);
 
   await pool.query(`
@@ -721,113 +592,11 @@ export async function initializeDatabase(): Promise<void> {
   `);
 
   await pool.query(`
-    DROP POLICY IF EXISTS nodes_select_policy ON public.nodes;
-  `);
-
-  await pool.query(`
-    CREATE POLICY nodes_select_policy
-    ON public.nodes
-    FOR SELECT
-    USING (
-      public.app_role() = 'admin'
-      OR EXISTS (
-        SELECT 1
-        FROM public.configs c
-        WHERE c.id = nodes.config_id
-          AND (
-            (
-              public.app_role() = 'super_student'
-              AND c.status = 'live'
-              AND c.university_id = public.app_university_id()
-            )
-            OR (
-              public.app_role() = 'student'
-              AND c.status = 'live'
-              AND c.university_id = public.app_university_id()
-              AND public.app_normalize_token(c.batch) = public.app_normalize_token(public.app_batch())
-              AND public.app_normalize_token(c.branch) = public.app_normalize_token(public.app_branch())
-              AND public.app_student_year_matches_config_year(public.app_year(), c.year)
-            )
-          )
-      )
-    );
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS nodes_admin_all_policy ON public.nodes;
-  `);
-
-  await pool.query(`
-    CREATE POLICY nodes_admin_all_policy
-    ON public.nodes
-    FOR ALL
-    USING (public.app_role() = 'admin')
-    WITH CHECK (public.app_role() = 'admin');
-  `);
-
-  await pool.query(`
     ALTER TABLE public.config_questions ENABLE ROW LEVEL SECURITY;
   `);
 
   await pool.query(`
-    DROP POLICY IF EXISTS config_questions_select_policy ON public.config_questions;
-  `);
-
-  await pool.query(`
-    CREATE POLICY config_questions_select_policy
-    ON public.config_questions
-    FOR SELECT
-    USING (
-      public.app_role() = 'admin'
-      OR EXISTS (
-        SELECT 1
-        FROM public.configs c
-        WHERE c.id = config_questions.config_id
-          AND (
-            (
-              public.app_role() = 'super_student'
-              AND c.status = 'live'
-              AND c.university_id = public.app_university_id()
-            )
-            OR (
-              public.app_role() = 'student'
-              AND c.status = 'live'
-              AND c.university_id = public.app_university_id()
-              AND public.app_normalize_token(c.batch) = public.app_normalize_token(public.app_batch())
-              AND public.app_normalize_token(c.branch) = public.app_normalize_token(public.app_branch())
-              AND public.app_student_year_matches_config_year(public.app_year(), c.year)
-            )
-          )
-      )
-    );
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS config_questions_admin_all_policy ON public.config_questions;
-  `);
-
-  await pool.query(`
-    CREATE POLICY config_questions_admin_all_policy
-    ON public.config_questions
-    FOR ALL
-    USING (public.app_role() = 'admin')
-    WITH CHECK (public.app_role() = 'admin');
-  `);
-
-  await pool.query(`
     ALTER TABLE public.config_replica_questions ENABLE ROW LEVEL SECURITY;
-  `);
-
-  await pool.query(`
-    DROP POLICY IF EXISTS config_replica_questions_admin_all_policy ON public.config_replica_questions;
-  `);
-
-  await pool.query(`
-    CREATE POLICY config_replica_questions_admin_all_policy
-    ON public.config_replica_questions
-    FOR ALL
-    USING (public.app_role() = 'admin')
-    WITH CHECK (public.app_role() = 'admin');
   `);
 
   // Legacy tables (subtopic_contents, subtopic_questions) are intentionally
@@ -904,16 +673,6 @@ export async function initializeDatabase(): Promise<void> {
 
   await pool.query(`
     ALTER TABLE IF EXISTS public.config_questions
-    DROP COLUMN IF EXISTS legacy_node_id;
-  `);
-
-  await pool.query(`
-    ALTER TABLE IF EXISTS public.config_questions
-    DROP COLUMN IF EXISTS legacy_question_id;
-  `);
-
-  await pool.query(`
-    ALTER TABLE IF EXISTS public.config_questions
     ALTER COLUMN unit_subtopic_id DROP NOT NULL;
   `);
 
@@ -925,36 +684,6 @@ export async function initializeDatabase(): Promise<void> {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS config_questions_subtopic_idx
     ON public.config_questions (unit_subtopic_id);
-  `);
-
-  // Migrate legacy scoped node ids in config_questions.unit_subtopic_id -> canonical subtopic ids.
-  await pool.query(`
-    UPDATE public.config_questions q
-    SET unit_subtopic_id = n.unit_subtopic_id
-    FROM public.nodes n
-    WHERE n.config_id = q.config_id
-      AND n.id = q.unit_subtopic_id
-      AND n.unit_subtopic_id IS NOT NULL
-      AND btrim(n.unit_subtopic_id) <> '';
-  `);
-
-  // Remove any legacy FK to dropped unit_subtopics table, then enforce canonical-node FK.
-  await pool.query(`
-    ALTER TABLE public.config_questions
-    DROP CONSTRAINT IF EXISTS config_questions_unit_subtopic_id_fkey;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.config_questions
-    DROP CONSTRAINT IF EXISTS config_questions_unit_subtopic_id_canonical_fkey;
-  `);
-
-  await pool.query(`
-    ALTER TABLE public.config_questions
-    ADD CONSTRAINT config_questions_unit_subtopic_id_canonical_fkey
-    FOREIGN KEY (unit_subtopic_id)
-    REFERENCES public.canonical_nodes(id)
-    NOT VALID;
   `);
 
   await pool.query(`
@@ -1012,41 +741,4 @@ export async function initializeDatabase(): Promise<void> {
     ON public.nodes (config_id, unit_subtopic_id);
   `);
 
-  // Normalize legacy sort_order columns to integer safely.
-  for (const tableName of ["config_unit_links", "canonical_nodes", "nodes"] as const) {
-    await pool.query(`
-      ALTER TABLE IF EXISTS public.${tableName}
-      ALTER COLUMN sort_order DROP DEFAULT;
-    `);
-    await pool.query(`
-      ALTER TABLE IF EXISTS public.${tableName}
-      ALTER COLUMN sort_order TYPE integer
-      USING COALESCE(NULLIF(trim(sort_order::text), ''), '0')::integer;
-    `);
-    await pool.query(`
-      ALTER TABLE IF EXISTS public.${tableName}
-      ALTER COLUMN sort_order SET DEFAULT 0;
-    `);
-  }
-
-  const existingSubjects = await pool.query<{ subject: string }>(`
-    SELECT DISTINCT subject
-    FROM public.configs
-    WHERE subject IS NOT NULL AND btrim(subject) <> '';
-  `);
-
-  for (const row of existingSubjects.rows) {
-    const name = row.subject.trim();
-    const normalized = name.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (!normalized) continue;
-    await pool.query(
-      `
-      INSERT INTO public.subjects (id, name, normalized_name, created_by)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (normalized_name) DO UPDATE
-      SET name = EXCLUDED.name, updated_at = now()
-      `,
-      [`sub_${normalized.replace(/\s+/g, "_")}`, name, normalized, "system"],
-    );
-  }
 }

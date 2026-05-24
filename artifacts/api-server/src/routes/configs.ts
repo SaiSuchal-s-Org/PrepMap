@@ -1,11 +1,27 @@
 import { Router, type IRouter } from "express";
 import { GetConfigsQueryParams, GetConfigsResponse } from "../api-zod";
-import { db, configsTable, nodesTable, usersTable, configQuestionsTable, withRequestDbContext } from "../db";
+import {
+  db,
+  configsTable,
+  nodesTable,
+  usersTable,
+  configQuestionsTable,
+  configConsolidatedStatsTable,
+  eventsTable,
+  withRequestDbContext,
+} from "../db";
 import { eq, and, ne, or, sql, type SQL } from "drizzle-orm";
 import { requireAdmin } from "../middleware/adminAuth";
 import { getJwtRequestAuth } from "../lib/requestAuth";
 
 const router: IRouter = Router();
+const QUESTION_BANK_EVENT_PREFIX = "__qb__:";
+
+const isQuestionBankEvent = (topicId: string | null | undefined, questionId: string | null | undefined): boolean =>
+  !!String(questionId || "").trim() || String(topicId || "").startsWith(QUESTION_BANK_EVENT_PREFIX);
+
+const isLearnerRole = (role: string | null | undefined): boolean =>
+  ["student", "super_student"].includes(String(role || "").trim().toLowerCase());
 
 function normalizeToken(value: string | null | undefined): string {
   return String(value ?? "")
@@ -653,6 +669,220 @@ router.put("/configs/:configId/question-bank/questions/:questionId", requireAdmi
     res.json({ success: true });
   } catch (error) {
     req.log.error({ err: error }, "Failed to update question text");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/configs/:id/consolidate-stats", requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Invalid config id" });
+      return;
+    }
+
+    const [config] = await db
+      .select({
+        id: configsTable.id,
+        universityId: configsTable.universityId,
+        batch: configsTable.batch,
+        year: configsTable.year,
+        branch: configsTable.branch,
+        subject: configsTable.subject,
+        exam: configsTable.exam,
+        status: configsTable.status,
+      })
+      .from(configsTable)
+      .where(eq(configsTable.id, id))
+      .limit(1);
+
+    if (!config) {
+      res.status(404).json({ error: "Config not found" });
+      return;
+    }
+    if (config.status !== "disabled") {
+      res.status(400).json({ error: "Consolidation is allowed only for disabled configs." });
+      return;
+    }
+
+    const authClaims = ((req as any).authClaims ?? null) as import("../lib/jwt").AccessTokenPayload | null;
+
+    const [students, events, totalSubtopicsRows, qbTargetRows] = await Promise.all([
+      db
+        .select({
+          id: usersTable.id,
+          role: usersTable.role,
+          universityId: usersTable.universityId,
+          batch: usersTable.batch,
+          year: usersTable.year,
+          branch: usersTable.branch,
+        })
+        .from(usersTable),
+      withRequestDbContext(authClaims, async (tx) =>
+        tx
+          .select({
+            userId: eventsTable.userId,
+            topicId: eventsTable.topicId,
+            subtopicId: eventsTable.subtopicId,
+            questionId: eventsTable.questionId,
+          })
+          .from(eventsTable)
+          .where(eq(eventsTable.configId, id))
+      ),
+      db
+        .select({ total: sql<number>`count(*)` })
+        .from(nodesTable)
+        .where(and(eq(nodesTable.configId, id), eq(nodesTable.type, "subtopic"))),
+      db
+        .select({ total: sql<number>`count(*)` })
+        .from(configQuestionsTable)
+        .where(eq(configQuestionsTable.configId, id)),
+    ]);
+
+    const learners = students.filter((s) => isLearnerRole(s.role));
+    const totalStudentsInBatch = learners.filter(
+      (s) =>
+        normalizeToken(s.universityId) === normalizeToken(config.universityId) &&
+        normalizeToken(s.batch) === normalizeToken(config.batch)
+    );
+    const eligibleStudents = totalStudentsInBatch.filter(
+      (s) =>
+        normalizeToken(s.branch) === normalizeToken(config.branch) &&
+        doesStudentYearMatchConfigYear(s.year, config.year)
+    );
+    const eligibleIds = new Set(eligibleStudents.map((s) => s.id));
+
+    const contentByUser = new Map<string, Set<string>>();
+    const qbByUser = new Map<string, Set<string>>();
+    const uniqueStudentsContentSet = new Set<string>();
+    const uniqueStudentsQbSet = new Set<string>();
+
+    for (const row of events) {
+      if (!eligibleIds.has(row.userId)) continue;
+      const isQb = isQuestionBankEvent(row.topicId, row.questionId);
+      if (isQb) {
+        uniqueStudentsQbSet.add(row.userId);
+        const qset = qbByUser.get(row.userId) ?? new Set<string>();
+        const qid = String(row.questionId || "").trim() || String(row.topicId || "").trim();
+        if (qid) qset.add(qid);
+        qbByUser.set(row.userId, qset);
+      } else {
+        const sid = String(row.subtopicId || "").trim();
+        if (!sid) continue;
+        uniqueStudentsContentSet.add(row.userId);
+        const sset = contentByUser.get(row.userId) ?? new Set<string>();
+        sset.add(sid);
+        contentByUser.set(row.userId, sset);
+      }
+    }
+
+    const contentTotalTargets = Number(totalSubtopicsRows[0]?.total ?? 0);
+    const qbTotalTargets = Number(qbTargetRows[0]?.total ?? 0);
+
+    let studentsCompletedContent = 0;
+    let studentsCompletedQb = 0;
+    let studentsCompletedBoth = 0;
+    let contentPctSum = 0;
+    let qbPctSum = 0;
+
+    for (const s of eligibleStudents) {
+      const contentDone = contentByUser.get(s.id)?.size ?? 0;
+      const qbDone = qbByUser.get(s.id)?.size ?? 0;
+      const contentPct = contentTotalTargets > 0 ? (contentDone / contentTotalTargets) * 100 : 0;
+      const qbPct = qbTotalTargets > 0 ? (qbDone / qbTotalTargets) * 100 : 0;
+      contentPctSum += contentPct;
+      qbPctSum += qbPct;
+      const completedContent = contentTotalTargets > 0 && contentDone >= contentTotalTargets;
+      const completedQb = qbTotalTargets > 0 && qbDone >= qbTotalTargets;
+      if (completedContent) studentsCompletedContent += 1;
+      if (completedQb) studentsCompletedQb += 1;
+      if (completedContent && completedQb) studentsCompletedBoth += 1;
+    }
+
+    const eligibleStudentCount = eligibleStudents.length;
+    const avgContentConsumptionPct = eligibleStudentCount > 0 ? Number((contentPctSum / eligibleStudentCount).toFixed(2)) : 0;
+    const avgQbConsumptionPct = eligibleStudentCount > 0 ? Number((qbPctSum / eligibleStudentCount).toFixed(2)) : 0;
+    const consolidatedAt = new Date();
+
+    let deletedEventsCount = 0;
+    const saved = await withRequestDbContext(authClaims, async (tx) => {
+      await tx
+        .insert(configConsolidatedStatsTable)
+        .values({
+          configId: config.id,
+          universityId: config.universityId,
+          batch: config.batch,
+          year: config.year,
+          branch: config.branch,
+          subject: config.subject,
+          exam: config.exam,
+          status: config.status,
+          totalEvents: events.length,
+          totalStudentsInBatch: totalStudentsInBatch.length,
+          eligibleStudentCount,
+          uniqueStudentsContent: uniqueStudentsContentSet.size,
+          uniqueStudentsQb: uniqueStudentsQbSet.size,
+          avgContentConsumptionPct,
+          avgQbConsumptionPct,
+          studentsCompletedContent,
+          studentsCompletedQb,
+          studentsCompletedBoth,
+          contentTotalTargets,
+          qbTotalTargets,
+          snapshotVersion: "v1",
+          consolidatedAt,
+          updatedAt: consolidatedAt,
+        })
+        .onConflictDoUpdate({
+          target: configConsolidatedStatsTable.configId,
+          set: {
+            universityId: config.universityId,
+            batch: config.batch,
+            year: config.year,
+            branch: config.branch,
+            subject: config.subject,
+            exam: config.exam,
+            status: config.status,
+            totalEvents: events.length,
+            totalStudentsInBatch: totalStudentsInBatch.length,
+            eligibleStudentCount,
+            uniqueStudentsContent: uniqueStudentsContentSet.size,
+            uniqueStudentsQb: uniqueStudentsQbSet.size,
+            avgContentConsumptionPct,
+            avgQbConsumptionPct,
+            studentsCompletedContent,
+            studentsCompletedQb,
+            studentsCompletedBoth,
+            contentTotalTargets,
+            qbTotalTargets,
+            snapshotVersion: "v1",
+            consolidatedAt,
+            updatedAt: consolidatedAt,
+          },
+        });
+
+      const deleted = await tx
+        .delete(eventsTable)
+        .where(eq(eventsTable.configId, config.id))
+        .returning({ id: eventsTable.id });
+      deletedEventsCount = deleted.length;
+
+      const [row] = await tx
+        .select()
+        .from(configConsolidatedStatsTable)
+        .where(eq(configConsolidatedStatsTable.configId, config.id))
+        .limit(1);
+      return row ?? null;
+    });
+
+    res.json({
+      success: true,
+      reconsolidated: true,
+      deletedEventsCount,
+      summary: saved,
+    });
+  } catch (error) {
+    req.log.error({ err: error }, "Failed to consolidate config stats");
     res.status(500).json({ error: "Internal server error" });
   }
 });

@@ -130,6 +130,38 @@ export interface ExamConfigAnalyticsRow {
   totalSubtopics: number;
 }
 
+export interface ConsolidatedConfigStatsRow {
+  configId: string;
+  universityId: string;
+  batch: string;
+  year: string;
+  branch: string;
+  subject: string;
+  exam: string;
+  status: string;
+  totalEvents: number;
+  totalStudentsInBatch: number;
+  eligibleStudentCount: number;
+  uniqueStudentsContent: number;
+  uniqueStudentsQb: number;
+  avgContentConsumptionPct: number;
+  avgQbConsumptionPct: number;
+  studentsCompletedContent: number;
+  studentsCompletedQb: number;
+  studentsCompletedBoth: number;
+  contentTotalTargets: number;
+  qbTotalTargets: number;
+  snapshotVersion: string;
+  consolidatedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ConsolidatedConfigStatsResponse {
+  rows: ConsolidatedConfigStatsRow[];
+  total: number;
+}
+
 export interface QuestionBankInteractionBreakdownResponse {
   total: number;
   byUniversity: Array<{
@@ -502,6 +534,16 @@ export const getLiveConfigQuestionBankInteractionSummary = async (options?: Requ
   );
 };
 
+export const getConsolidatedConfigStats = async (options?: RequestInit) => {
+  return customFetch<ConsolidatedConfigStatsResponse>(
+    `/api/admin/analytics/consolidated-configs`,
+    {
+      ...options,
+      method: "GET",
+    }
+  );
+};
+
 export const getConfigsVersion = async (universityId?: string | null, options?: RequestInit) => {
   const query = universityId ? `?universityId=${encodeURIComponent(universityId)}` : "";
   return customFetch<ConfigsVersionResponse>(`/api/configs/version${query}`, {
@@ -677,11 +719,24 @@ export const purgeConfig = async (id: string, options?: RequestInit) => {
   });
 };
 
+export interface ConsolidateConfigStatsMutationResponse extends SuccessResponse {
+  reconsolidated: boolean;
+  summary: unknown | null;
+}
+
+export const consolidateConfigStats = async (id: string, options?: RequestInit) => {
+  return customFetch<ConsolidateConfigStatsMutationResponse>(`/api/configs/${id}/consolidate-stats`, {
+    ...options,
+    method: "POST",
+  });
+};
+
 export const cloneConfigToUniversity = async (
   configId: string,
   payload: {
     targetUniversityId: string;
     targetExam: string;
+    targetBatch?: string;
     includeQuestions?: boolean;
     includeSyllabus?: boolean;
     includeReplicaQuestions?: boolean;
@@ -723,6 +778,7 @@ export const useCloneConfigToUniversity = <
       configId: string;
       targetUniversityId: string;
       targetExam: string;
+      targetBatch?: string;
       includeQuestions?: boolean;
       includeSyllabus?: boolean;
       includeReplicaQuestions?: boolean;
@@ -737,6 +793,7 @@ export const useCloneConfigToUniversity = <
       configId: string;
       targetUniversityId: string;
       targetExam: string;
+      targetBatch?: string;
       includeQuestions?: boolean;
       includeSyllabus?: boolean;
       includeReplicaQuestions?: boolean;
@@ -748,6 +805,7 @@ export const useCloneConfigToUniversity = <
       configId,
       targetUniversityId,
       targetExam,
+      targetBatch,
       includeQuestions,
       includeSyllabus,
       includeReplicaQuestions,
@@ -755,6 +813,7 @@ export const useCloneConfigToUniversity = <
       cloneConfigToUniversity(configId, {
         targetUniversityId,
         targetExam,
+        targetBatch,
         includeQuestions,
         includeSyllabus,
         includeReplicaQuestions,
@@ -819,6 +878,7 @@ export const generateCheapLaneA = async (
   payloadOptions?: {
     ignoreSavedReplica?: boolean;
     includeFactsInMasterPrompt?: boolean;
+    replicaAsIsPercentage?: number;
   },
   requestOptions?: RequestInit,
 ) => {
@@ -833,7 +893,21 @@ export const generateCheapLaneA = async (
       mode,
       ignoreSavedReplica: payloadOptions?.ignoreSavedReplica,
       includeFactsInMasterPrompt: payloadOptions?.includeFactsInMasterPrompt,
+      replicaAsIsPercentage: payloadOptions?.replicaAsIsPercentage,
     }),
+  });
+};
+
+export const useConsolidateConfigStats = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(
+  options?: UseMutationOptions<ConsolidateConfigStatsMutationResponse, TError, { id: string }, TContext>,
+) => {
+  return useMutation<ConsolidateConfigStatsMutationResponse, TError, { id: string }, TContext>({
+    mutationKey: ["consolidateConfigStats"],
+    mutationFn: ({ id }) => consolidateConfigStats(id),
+    ...options,
   });
 };
 
@@ -864,6 +938,7 @@ export const importCheapLaneB = async (
   configId: string,
   payload: {
     forceOverwrite?: boolean;
+    replicaAsIsPercentage?: number;
     units: Array<{
       title: string;
       topics: Array<{
@@ -899,6 +974,7 @@ export const startCheapLaneBImport = async (
   configId: string,
   payload: {
     forceOverwrite?: boolean;
+    replicaAsIsPercentage?: number;
     units: Array<{
       title: string;
       topics: Array<{
@@ -1046,6 +1122,19 @@ export const useGetLiveConfigQuestionBankInteractionSummary = <
   return useQuery<LiveConfigQuestionBankInteractionSummaryResponse, TError, TData>({
     queryKey: ["admin-analytics-live-config-qb-summary"],
     queryFn: () => getLiveConfigQuestionBankInteractionSummary(),
+    ...options,
+  });
+};
+
+export const useGetConsolidatedConfigStats = <
+  TError = ErrorType<unknown>,
+  TData = ConsolidatedConfigStatsResponse,
+>(
+  options?: Omit<UseQueryOptions<ConsolidatedConfigStatsResponse, TError, TData>, "queryKey" | "queryFn">,
+) => {
+  return useQuery<ConsolidatedConfigStatsResponse, TError, TData>({
+    queryKey: ["admin-analytics-consolidated-configs"],
+    queryFn: () => getConsolidatedConfigStats(),
     ...options,
   });
 };
@@ -1483,6 +1572,7 @@ export const useGenerateCheapLaneA = <
       mode: CheapGenerationMode;
       ignoreSavedReplica?: boolean;
       includeFactsInMasterPrompt?: boolean;
+      replicaAsIsPercentage?: number;
     },
     TContext
   >,
@@ -1495,12 +1585,13 @@ export const useGenerateCheapLaneA = <
       mode: CheapGenerationMode;
       ignoreSavedReplica?: boolean;
       includeFactsInMasterPrompt?: boolean;
+      replicaAsIsPercentage?: number;
     },
     TContext
   >({
     mutationKey: ["cheap-lane-a"],
-    mutationFn: ({ configId, mode, ignoreSavedReplica, includeFactsInMasterPrompt }) =>
-      generateCheapLaneA(configId, mode, { ignoreSavedReplica, includeFactsInMasterPrompt }),
+    mutationFn: ({ configId, mode, ignoreSavedReplica, includeFactsInMasterPrompt, replicaAsIsPercentage }) =>
+      generateCheapLaneA(configId, mode, { ignoreSavedReplica, includeFactsInMasterPrompt, replicaAsIsPercentage }),
     ...options,
   });
 };
@@ -1562,6 +1653,7 @@ export const useImportCheapLaneB = <
       configId: string;
       payload: {
         forceOverwrite?: boolean;
+        replicaAsIsPercentage?: number;
         units: Array<{
           title: string;
           topics: Array<{
@@ -1591,6 +1683,7 @@ export const useImportCheapLaneB = <
       configId: string;
       payload: {
         forceOverwrite?: boolean;
+        replicaAsIsPercentage?: number;
         units: Array<{
           title: string;
           topics: Array<{

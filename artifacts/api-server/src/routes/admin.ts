@@ -1,6 +1,14 @@
 import { Router, type IRouter, type Request } from "express";
 import { GetAdminStatsResponse } from "../api-zod";
-import { db, eventsTable, nodesTable, usersTable, configsTable, withRequestDbContext } from "../db";
+import {
+  db,
+  eventsTable,
+  nodesTable,
+  usersTable,
+  configsTable,
+  configConsolidatedStatsTable,
+  withRequestDbContext,
+} from "../db";
 import { eq, count, inArray } from "drizzle-orm";
 import { requireAdmin } from "../middleware/adminAuth";
 import type { AccessTokenPayload } from "../lib/jwt";
@@ -614,6 +622,32 @@ router.get("/admin/analytics/configs/:configId/students", requireAdmin, async (r
     });
   } catch (error) {
     req.log.error({ err: error }, "Failed to fetch per-student config analytics");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/admin/analytics/consolidated-configs", requireAdmin, async (req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(configConsolidatedStatsTable);
+
+    const payload = rows
+      .map((row) => ({
+        ...row,
+        consolidatedAt: row.consolidatedAt?.toISOString?.() ?? null,
+        createdAt: row.createdAt?.toISOString?.() ?? null,
+        updatedAt: row.updatedAt?.toISOString?.() ?? null,
+      }))
+      .sort((a, b) => {
+        const at = a.consolidatedAt ? new Date(a.consolidatedAt).getTime() : 0;
+        const bt = b.consolidatedAt ? new Date(b.consolidatedAt).getTime() : 0;
+        return bt - at;
+      });
+
+    res.json({ rows: payload, total: payload.length });
+  } catch (error) {
+    req.log.error({ err: error }, "Failed to fetch consolidated config analytics");
     res.status(500).json({ error: "Internal server error" });
   }
 });

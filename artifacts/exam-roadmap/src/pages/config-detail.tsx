@@ -101,16 +101,30 @@ function FileUploadSection({
   });
   const { toast } = useToast();
 
-  const stripMainQuestionNumber = (value: string): string => {
+  const stripReplicaPaperMetadata = (value: string): string => {
     let text = String(value || "").trim();
     if (!text) return "";
-    const patterns: RegExp[] = [
+    const stripPatterns: RegExp[] = [
       /^\s*(?:q(?:uestion)?\.?\s*)?\d{1,3}\s*[\).:\-]\s*/i,
       /^\s*\(\s*\d{1,3}\s*\)\s*/i,
       /^\s*(?:q(?:uestion)?\.?\s*)?\d{1,3}\s+/i,
+      /^\s*(?:set|paper)\s*[-:]*\s*[a-z0-9]+\s*[-:]\s*/i,
+      /^\s*(?:part|section)\s*[-:]*\s*[a-z0-9]+\s*[-:]\s*/i,
+      /^\s*(?:question\s*no\.?|q\.?\s*no\.?)\s*[:\-]?\s*\d{1,3}\s*/i,
+      /^\s*(?:bloom(?:s)?|co|course\s*outcome|rbtl|unit)\s*[:\-][^:]{0,50}[:\-]\s*/i,
     ];
-    for (const pattern of patterns) text = text.replace(pattern, "");
-    return text.trim();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const pattern of stripPatterns) {
+        const next = text.replace(pattern, "").trim();
+        if (next !== text) {
+          text = next;
+          changed = true;
+        }
+      }
+    }
+    return text.replace(/\s+/g, " ").trim();
   };
 
   useEffect(() => {
@@ -119,7 +133,7 @@ function FileUploadSection({
       setExtractedQuestions(
         saved.map((q) => ({
           ...q,
-          question: stripMainQuestionNumber(q.question),
+          question: stripReplicaPaperMetadata(q.question),
           batchId: 0,
         })),
       );
@@ -286,7 +300,7 @@ function FileUploadSection({
       const previewRows = Array.isArray(laneAData.replicaQuestions) ? laneAData.replicaQuestions : [];
       const incomingRowsBase = previewRows.map((q) => ({
         markType: q.markType,
-        question: stripMainQuestionNumber(q.question),
+        question: stripReplicaPaperMetadata(q.question),
         answer: q.answer,
         unitTitle: q.unitTitle,
         topicTitle: q.topicTitle,
@@ -338,6 +352,20 @@ function FileUploadSection({
     setExtractedQuestions((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const handleToggleExtractedQuestionStar = (index: number, isStarred: boolean) => {
+    setExtractedQuestions((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, isStarred } : row)),
+    );
+  };
+
+  const handleUnstarAllExtractedQuestions = () => {
+    setExtractedQuestions((prev) => prev.map((row) => ({ ...row, isStarred: false })));
+    toast({
+      title: "Unstarred all",
+      description: "All preview questions are now unstarred.",
+    });
+  };
+
   const handleClearPreviewQuestions = () => {
     setExtractedQuestions([]);
     setExtractionWarnings([]);
@@ -356,7 +384,7 @@ function FileUploadSection({
         unitTitle: q.unitTitle.trim(),
         topicTitle: q.topicTitle.trim(),
         subtopicTitle: q.subtopicTitle.trim(),
-        isStarred: true,
+        isStarred: Boolean(q.isStarred),
       }))
       .filter((q) => q.question);
 
@@ -489,6 +517,14 @@ function FileUploadSection({
                               <SelectItem value="Applied">Applied</SelectItem>
                             </SelectContent>
                           </Select>
+                          <label className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={!!q.isStarred}
+                              onChange={(e) => handleToggleExtractedQuestionStar(index, e.target.checked)}
+                            />
+                            Star
+                          </label>
                         </div>
                         <Button
                           type="button"
@@ -561,27 +597,38 @@ function FileUploadSection({
             )}
           </Button>
         </div>
-        <Button
-          type="button"
-          onClick={handleSaveQuestionsToConfig}
-          disabled={extracting || saveReplicaQuestions.isPending || extractedQuestions.length === 0}
-          className="w-full gap-2"
-        >
-          {saveReplicaQuestions.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
-          ) : (
-            <><Save className="w-4 h-4" /> Save Questions To Config</>
-          )}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleClearPreviewQuestions}
-          disabled={extracting || saveReplicaQuestions.isPending || extractedQuestions.length === 0}
-          className="w-full gap-2"
-        >
-          <Trash2 className="w-4 h-4" /> Clear Preview
-        </Button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleUnstarAllExtractedQuestions}
+            disabled={extracting || saveReplicaQuestions.isPending || extractedQuestions.length === 0}
+            className="w-full gap-2"
+          >
+            Unstar All
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleClearPreviewQuestions}
+            disabled={extracting || saveReplicaQuestions.isPending || extractedQuestions.length === 0}
+            className="w-full gap-2"
+          >
+            <Trash2 className="w-4 h-4" /> Clear Preview
+          </Button>
+          <Button
+            type="button"
+            onClick={handleSaveQuestionsToConfig}
+            disabled={extracting || saveReplicaQuestions.isPending || extractedQuestions.length === 0}
+            className="w-full gap-2 sm:col-span-2"
+          >
+            {saveReplicaQuestions.isPending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
+            ) : (
+              <><Save className="w-4 h-4" /> Save Questions To Config</>
+            )}
+          </Button>
+        </div>
       </div>
 
       {previewImage && (
@@ -714,6 +761,7 @@ interface EditableQuestion {
 
 function CheapGenerationSection({ configId }: { configId: string }) {
   const [laneAMode, setLaneAMode] = useState<CheapGenerationMode>("explanations_only");
+  const [replicaAsIsPercentage, setReplicaAsIsPercentage] = useState(40);
   const [includeFactsInMasterPrompt, setIncludeFactsInMasterPrompt] = useState(false);
   const [forceOverwrite, setForceOverwrite] = useState(false);
   const [masterPrompt, setMasterPrompt] = useState("");
@@ -802,10 +850,12 @@ function CheapGenerationSection({ configId }: { configId: string }) {
       const questionCount = questions.length;
       const starCount = questions.filter((q: any) => !!q?.isStarred).length;
       const mandatoryKeys = new Set(laneAReplicaQuestions.map((q) => normalizeText(q.question)));
-      const presentMandatory = questions.filter((q: any) => mandatoryKeys.has(normalizeText(String(q?.question || "")))).length;
+      const verbatimReplicaCount = questions.filter((q: any) => mandatoryKeys.has(normalizeText(String(q?.question || "")))).length;
       const expectedQuestions = laneAResult?.totalQuestionTarget ?? null;
       const expectedStars = laneAResult?.totalStarTarget ?? null;
-      const expectedMandatory = laneAReplicaQuestions.length;
+      const allowedVerbatimReplicaCount = Math.floor(
+        laneAReplicaQuestions.length * (Math.max(0, Math.min(100, Number(replicaAsIsPercentage) || 0)) / 100)
+      );
 
       const issues: string[] = [];
       if (expectedQuestions != null && questionCount !== expectedQuestions) {
@@ -814,8 +864,8 @@ function CheapGenerationSection({ configId }: { configId: string }) {
       if (expectedStars != null && starCount !== expectedStars) {
         issues.push(`stars ${starCount}/${expectedStars}`);
       }
-      if (presentMandatory < expectedMandatory) {
-        issues.push(`mandatory replica ${presentMandatory}/${expectedMandatory}`);
+      if (verbatimReplicaCount > allowedVerbatimReplicaCount) {
+        issues.push(`verbatim replica ${verbatimReplicaCount}/${allowedVerbatimReplicaCount} allowed`);
       }
 
       if (issues.length > 0) {
@@ -827,7 +877,7 @@ function CheapGenerationSection({ configId }: { configId: string }) {
       } else {
         toast({
           title: "JSON valid",
-          description: `Found ${units} unit(s), ${questionCount} question(s), ${starCount} starred, mandatory ${presentMandatory}/${expectedMandatory}.`,
+          description: `Found ${units} unit(s), ${questionCount} question(s), ${starCount} starred, verbatim replica ${verbatimReplicaCount}/${allowedVerbatimReplicaCount} allowed.`,
         });
       }
     } catch {
@@ -836,8 +886,9 @@ function CheapGenerationSection({ configId }: { configId: string }) {
   };
 
   const handleLaneA = () => {
+    const clampedReplicaAsIsPercentage = Math.max(0, Math.min(100, Number(replicaAsIsPercentage) || 0));
     generateLaneA.mutate(
-      { configId, mode: laneAMode, includeFactsInMasterPrompt },
+      { configId, mode: laneAMode, includeFactsInMasterPrompt, replicaAsIsPercentage: clampedReplicaAsIsPercentage },
       {
         onSuccess: (data) => {
           setMasterPrompt(data.masterPrompt);
@@ -877,6 +928,7 @@ function CheapGenerationSection({ configId }: { configId: string }) {
     const parsedQuestions = Array.isArray((parsed as any)?.questions) ? (parsed as any).questions.length : 0;
     setExpectedImportQuestionCount(parsedQuestions);
 
+    const clampedReplicaAsIsPercentage = Math.max(0, Math.min(100, Number(replicaAsIsPercentage) || 0));
     startImportLaneB.mutate(
       {
         configId,
@@ -884,6 +936,7 @@ function CheapGenerationSection({ configId }: { configId: string }) {
           ...(parsed as any),
           generationMode: laneAMode,
           forceOverwrite,
+          replicaAsIsPercentage: clampedReplicaAsIsPercentage,
         } as any,
       },
       {
@@ -971,6 +1024,18 @@ function CheapGenerationSection({ configId }: { configId: string }) {
               <SelectItem value="questions_only">Questions only</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div className="max-w-[340px]">
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Replica As-Is %</label>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            value={replicaAsIsPercentage}
+            onChange={(e) => setReplicaAsIsPercentage(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          />
         </div>
         <label className="inline-flex items-center gap-2 text-xs text-foreground">
           <input

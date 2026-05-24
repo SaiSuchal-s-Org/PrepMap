@@ -112,6 +112,30 @@ function parseCheapGenerationMode(value: unknown): CheapGenerationMode {
   return "explanations_only";
 }
 
+function parseReplicaAsIsRatioFromRequest(rawValue: unknown, fallback = 0.4): number {
+  if (rawValue == null || rawValue === "") return fallback;
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  // UI sends percentage (0..100). Accept legacy ratio (0..1) too.
+  if (parsed > 1) return Math.max(0, Math.min(1, parsed / 100));
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function pickRandomIndices(total: number, pickCount: number): Set<number> {
+  const indices = Array.from({ length: total }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = indices[i];
+    indices[i] = indices[j];
+    indices[j] = t;
+  }
+  return new Set(indices.slice(0, Math.max(0, Math.min(total, pickCount))));
+}
+
+function normalizeQuestionText(value: string): string {
+  return normalizeText(String(value || "").trim());
+}
+
 async function buildExplanationGapFilteredStructure(
   configId: string,
   structure: LaneAStructureUnit[],
@@ -374,16 +398,32 @@ function buildExamReadyFallbackAnswer(
   ].join("\n");
 }
 
-function stripMainQuestionNumber(value: string): string {
+function stripReplicaPaperMetadata(value: string): string {
   let text = String(value || "").trim();
   if (!text) return "";
-  const patterns: RegExp[] = [
+  const stripPatterns: RegExp[] = [
+    // Leading question numbering markers only (preserve subparts like (a), (i) inside body).
     /^\s*(?:q(?:uestion)?\.?\s*)?\d{1,3}\s*[\).:\-]\s*/i,
     /^\s*\(\s*\d{1,3}\s*\)\s*/i,
     /^\s*(?:q(?:uestion)?\.?\s*)?\d{1,3}\s+/i,
+    // Paper/set/part metadata prefixes.
+    /^\s*(?:set|paper)\s*[-:]*\s*[a-z0-9]+\s*[-:]\s*/i,
+    /^\s*(?:part|section)\s*[-:]*\s*[a-z0-9]+\s*[-:]\s*/i,
+    /^\s*(?:question\s*no\.?|q\.?\s*no\.?)\s*[:\-]?\s*\d{1,3}\s*/i,
+    /^\s*(?:bloom(?:s)?|co|course\s*outcome|rbtl|unit)\s*[:\-][^:]{0,50}[:\-]\s*/i,
   ];
-  for (const pattern of patterns) text = text.replace(pattern, "");
-  return text.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of stripPatterns) {
+      const next = text.replace(pattern, "").trim();
+      if (next !== text) {
+        text = next;
+        changed = true;
+      }
+    }
+  }
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function inferMarkTypeFromQuestionText(questionText: string): "Foundational" | "Applied" {
@@ -955,6 +995,7 @@ router.post("/configs/:id/clone", requireAdmin, async (req, res) => {
     const sourceConfigId = String(req.params.id || "").trim();
     const targetUniversityId = String(req.body?.targetUniversityId || "").trim();
     const targetExam = String(req.body?.targetExam || "").trim();
+    const requestedTargetBatch = String(req.body?.targetBatch || "").trim();
     const includeQuestions = req.body?.includeQuestions !== false;
     const includeSyllabus = req.body?.includeSyllabus !== false;
     const includeReplicaQuestions = req.body?.includeReplicaQuestions !== false;
@@ -981,13 +1022,14 @@ router.post("/configs/:id/clone", requireAdmin, async (req, res) => {
       res.status(404).json({ error: "Source config not found" });
       return;
     }
+    const targetBatch = requestedTargetBatch || String(source.batch || "").trim() || "2025";
 
     const conflicting = await db
       .select({ id: configsTable.id, status: configsTable.status })
       .from(configsTable)
       .where(and(
         eq(configsTable.universityId, targetUniversityId),
-        eq(configsTable.batch, String(source.batch || "").trim() || "2025"),
+        eq(configsTable.batch, targetBatch),
         eq(configsTable.year, source.year),
         eq(configsTable.branch, source.branch),
         eq(configsTable.subject, source.subject),
@@ -1010,7 +1052,7 @@ router.post("/configs/:id/clone", requireAdmin, async (req, res) => {
       await tx.insert(configsTable).values({
         id: clonedConfigId,
         universityId: targetUniversityId,
-        batch: String(source.batch || "").trim() || "2025",
+        batch: targetBatch,
         year: source.year,
         branch: source.branch,
         subject: source.subject,
@@ -1168,6 +1210,7 @@ router.post("/configs/:id/clone", requireAdmin, async (req, res) => {
       clonedFromConfigId: sourceConfigId,
         cloneOptions: {
           targetExam,
+          targetBatch,
           includeQuestions,
           includeSyllabus,
           includeReplicaQuestions,
@@ -1354,18 +1397,25 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
           if (replicaCount <= baseline) return baseline;
           return Math.ceil(replicaCount / 10) * 10;
         })();
+    const replicaAsIsRatio = parseReplicaAsIsRatioFromRequest((req.body as any)?.replicaAsIsPercentage, 0.4);
     const mandatoryReplicaQuestions = isExplanationsOnly
       ? []
       : pkg.replicaQuestions.slice(0, totalQuestionTarget);
+    const replicaAsIsCount = Math.floor(mandatoryReplicaQuestions.length * replicaAsIsRatio);
+    const asIsIndexSet = pickRandomIndices(mandatoryReplicaQuestions.length, replicaAsIsCount);
+    const replicaAsIsQuestions = mandatoryReplicaQuestions.filter((_, idx) => asIsIndexSet.has(idx));
+    const replicaVariantQuestions = mandatoryReplicaQuestions.filter((_, idx) => !asIsIndexSet.has(idx));
     const droppedReplicaCount = isExplanationsOnly
       ? 0
       : Math.max(0, pkg.replicaQuestions.length - mandatoryReplicaQuestions.length);
     const starredReplica = mandatoryReplicaQuestions.filter((q) => q.isStarred).length;
-    // Keep a minimum starred floor for question modes (e.g., Mid=20, EndSem=25),
-    // but never down-cap replica if it already contains more starred questions.
+    // Star policy:
+    // - If no saved replica question is starred, keep final star target at 0.
+    // - If at least one saved replica question is starred, apply exam minimum floor
+    //   (e.g., Mid=20, EndSem=25) and never down-cap replica stars.
     const effectiveStarTarget = isExplanationsOnly
       ? 0
-      : Math.max(pkg.totalStarTarget, starredReplica);
+      : (starredReplica === 0 ? 0 : Math.max(pkg.totalStarTarget, starredReplica));
     const remainingStarsNeeded = Math.max(0, effectiveStarTarget - starredReplica);
     const remainingQuestionsNeeded = Math.max(
       0,
@@ -1389,6 +1439,11 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     if (droppedReplicaCount > 0) {
       laneAWarnings.push(
         `Replica question list exceeded target and was capped to ${totalQuestionTarget}.`
+      );
+    }
+    if (!isExplanationsOnly) {
+      laneAWarnings.push(
+        `Replica split: ${replicaAsIsQuestions.length} as-is, ${replicaVariantQuestions.length} variant (ratio=${replicaAsIsRatio}).`
       );
     }
 
@@ -1474,10 +1529,32 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     - explanations_only: populate units fully, set "questions": [].
     - questions_only: set "units": [] exactly. Populate questions fully.
     - questions_only validation: any non-empty "units" array is invalid output and must be corrected before finalizing.
-    - Include all mandatory replica questions exactly as given below (skip this only for explanations_only mode).
+    - Include all replica questions listed below (skip this only for explanations_only mode).
+    - SECTION A (REPLICA_AS_IS_QUESTIONS): copy question text verbatim.
+    - SECTION B (REPLICA_VARIANT_QUESTIONS): include each question but NOT verbatim:
+      - Keep core concept, difficulty, and mark demand unchanged.
+      - Change wording/context/details enough to avoid exact text match.
+      - Variant quality bar (strict): a student who memorized the original answer should NOT be able to copy it directly; they must solve/think again.
+      - For coding/numerical/problem-solving prompts, alter inputs/values/data/parameters and keep the same solving DNA.
+      - For coding/numerical/problem-solving prompts, if values/inputs/expected trace are unchanged, the variant is invalid.
+      - For pure theory prompts, do not do verb swaps only (e.g., Explain->Describe, List->Arrange, State->Determine) with same scope.
+      - For pure theory prompts, shift the inquiry angle meaningfully while staying in the same concept scope:
+        - trade-off/limitation angle, or
+        - failure/edge-case angle, or
+        - compare-contrast angle, or
+        - apply-to-scenario angle.
+      - A REPLICA_VARIANT_QUESTION is INVALID if punctuation/casing-only edits are used; meaningfully rewrite the sentence form.
+      - A REPLICA_VARIANT_QUESTION is INVALID if numbers/identifiers/context all remain unchanged in computational questions.
+      - For each REPLICA_VARIANT_QUESTION, rewrite first, then validate it is non-identical and cognitively non-trivial before adding to output.
+    - SECTION C (NEWLY_GENERATED_QUESTIONS): fill only remaining slots after sections A and B.
+    - Star policy:
+      - If saved replica starred count is 0, all final questions must be unstarred.
+      - If saved replica starred count is > 0, enforce total starred target normally.
     - Total questions required: ${totalQuestionTarget}
     - Total starred required: ${effectiveStarTarget}
     - Replica questions already included: ${mandatoryReplicaQuestions.length}
+    - Replica as-is count required: ${replicaAsIsQuestions.length}
+    - Replica variant count required: ${replicaVariantQuestions.length}
     - Remaining questions to generate: ${remainingQuestionsNeeded}
     - Remaining starred to allocate across non-replica questions: ${remainingStarsNeeded}
     - Distribute starred questions evenly — no more than 2 consecutive non-starred questions before a starred one.
@@ -1501,7 +1578,9 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     - markType must be only "Foundational" or "Applied".
     - Map marks to labels as: 1-3 marks => Foundational, 4+ marks => Applied.
     - If marks are not provided, classify by demand: definition/list/short-explain => Foundational, analyze/compare/justify/design/solve-with-steps => Applied.
-    - Keep mandatory replica questions verbatim for question text.
+    - SECTION A must remain verbatim for question text.
+    - SECTION B must remain non-verbatim for question text.
+    - In SECTION B, treat exact textual overlap as a hard error and rewrite immediately.
     - Topic/subtopic explanations must be beginner-friendly and written in simple English.
     - Each topic/subtopic explanation must be concept-only — no examples inside explanation fields.
     - All examples belong exclusively in "example_block". Never put an example in "explanation".
@@ -1568,8 +1647,11 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     ${structureValidationLine}
     3) questions.length === ${totalQuestionTarget}
     4) count(isStarred=true) === ${effectiveStarTarget}
-    5) all mandatory replica questions are present and verbatim.
-    6) no duplicate question text after normalization.
+    5) SECTION A complete: all REPLICA_AS_IS_QUESTIONS are present and verbatim.
+    6) SECTION B complete: all REPLICA_VARIANT_QUESTIONS are present, non-verbatim, and pass the variant quality bar.
+    7) If saved replica starred count is 0, all questions are unstarred. Otherwise, starred count meets the target.
+    8) SECTION C count is exactly ${remainingQuestionsNeeded}.
+    9) no duplicate question text after normalization.
     Fix any failure before closing the artifact. Do not write commentary during validation — output only the minimal corrective patch to the artifact if needed, then close the artifact and write the confirmation line.
 
     GENERATION PROCEDURE (follow in order):
@@ -1579,8 +1661,16 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
     ${stepAInstruction}
     Step B) explanations_only: write full unit content, then write "questions": [] and close the JSON with }.
     Step C) questions_only: keep "units" as [] and stream all questions into the artifact.
-    Step D) If mode includes questions, generate questions internally in 5 batches of 10 (or equivalent small batches), then merge into one final questions array before final validation. Do not output partial batches.
-    Step E) In questions array: insert all MANDATORY_REPLICA_QUESTIONS first, then generate remaining questions.
+    Step D) If mode includes questions, process strictly by sections in this order:
+            - SECTION A: insert REPLICA_AS_IS_QUESTIONS verbatim.
+            - SECTION B: write REPLICA_VARIANT_QUESTIONS as non-verbatim variants.
+            - SECTION C: generate only remaining questions to hit total count.
+    Step E) Before writing any SECTION B question, run this self-check:
+            - non-verbatim check: not exact text.
+            - solve-again check: a memorized original answer should not directly fit.
+            - computational check: values/inputs/parameters changed when applicable.
+            - theory check: inquiry angle changed meaningfully (not verb-swap only).
+            If any check fails, rewrite until all pass.
     Step F) Assign isStarred flags as you write each question — do not defer starring to a second pass.
     Step G) Close the JSON with } and close the artifact.
     Step H) Run FINAL VALIDATION without commentary:
@@ -1590,8 +1680,14 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
 
     ${promptStructureSection}
 
-    MANDATORY_REPLICA_QUESTIONS:
-    ${JSON.stringify(mandatoryReplicaQuestions, null, 2)}
+    SECTION A_INPUT_REPLICA_AS_IS_QUESTIONS:
+    ${JSON.stringify(replicaAsIsQuestions, null, 2)}
+
+    SECTION B_INPUT_REPLICA_VARIANT_QUESTIONS:
+    ${JSON.stringify(replicaVariantQuestions, null, 2)}
+
+    SECTION B_EXACT_TEXT_FORBIDDEN (must not appear verbatim in final questions):
+    ${JSON.stringify(replicaVariantQuestions.map((q) => String(q.question || "").trim()), null, 2)}
     `;
 
 
@@ -2176,7 +2272,12 @@ async function performCheapImport(
       message: "Validating JSON and preparing payload...",
     });
 
+    const requestAuthClaims = authClaims;
     const pkg = await buildLaneAConfigPackage(id);
+    const savedReplicaQuestions = await loadSavedReplicaQuestions(id, requestAuthClaims);
+    if (savedReplicaQuestions.length > 0) {
+      pkg.replicaQuestions = savedReplicaQuestions;
+    }
     const body = parseImportBody(rawBody);
     const forceOverwrite = Boolean((rawBody as any)?.forceOverwrite);
     const overwritePolicy: OverwritePolicy = forceOverwrite ? "force_overwrite" : "preserve_existing";
@@ -2223,6 +2324,52 @@ async function performCheapImport(
 
     const questions = isExplanationsOnlyImport ? [] : [...body.questions];
 
+    if (!isExplanationsOnlyImport) {
+      const baseline = pkg.totalQuestionTarget;
+      const replicaCap = pkg.replicaQuestions.length <= baseline
+        ? baseline
+        : Math.ceil(pkg.replicaQuestions.length / 10) * 10;
+      const mandatoryReplicaQuestions = pkg.replicaQuestions.slice(0, replicaCap);
+      const replicaAsIsRatio = parseReplicaAsIsRatioFromRequest((rawBody as any)?.replicaAsIsPercentage, 0.4);
+      const allowedVerbatimReplicaCount = Math.floor(mandatoryReplicaQuestions.length * replicaAsIsRatio);
+      const starredReplica = mandatoryReplicaQuestions.filter((q) => !!q.isStarred).length;
+      const effectiveStarTarget = starredReplica === 0 ? 0 : Math.max(pkg.totalStarTarget, starredReplica);
+      const replicaTextSet = new Set(
+        mandatoryReplicaQuestions
+          .map((q) => normalizeQuestionText(q.question))
+          .filter((q) => q.length > 0)
+      );
+      const verbatimReplicaCount = questions.reduce((count, q) => {
+        const normalized = normalizeQuestionText(q.question);
+        if (!normalized) return count;
+        return count + (replicaTextSet.has(normalized) ? 1 : 0);
+      }, 0);
+      const finalStarCount = questions.filter((q) => !!q.isStarred).length;
+
+      if (verbatimReplicaCount > allowedVerbatimReplicaCount) {
+        throw new Error(
+          `Lane B validation failed: found ${verbatimReplicaCount} verbatim replica questions, allowed maximum is ${allowedVerbatimReplicaCount} (REPLICA_AS_IS_RATIO=${replicaAsIsRatio}).`
+        );
+      }
+      if (starredReplica === 0 && finalStarCount !== 0) {
+        throw new Error(
+          `Lane B validation failed: found ${finalStarCount} starred questions, but saved replica has 0 starred questions so final bank must have 0 starred.`
+        );
+      }
+      if (starredReplica > 0 && finalStarCount < effectiveStarTarget) {
+        throw new Error(
+          `Lane B validation failed: found ${finalStarCount} starred questions, required minimum is ${effectiveStarTarget}.`
+        );
+      }
+
+      warnings.push(
+        `Replica verbatim check: ${verbatimReplicaCount}/${allowedVerbatimReplicaCount} allowed exact replica questions.`
+      );
+      warnings.push(starredReplica === 0
+        ? `Star check: ${finalStarCount}/0 required (saved replica has no starred questions).`
+        : `Star check: ${finalStarCount}/${effectiveStarTarget} minimum required starred questions.`);
+    }
+
     setCheapImportProgress(id, {
       stage: "saving_structure",
       totalQuestions: questions.length,
@@ -2235,7 +2382,7 @@ async function performCheapImport(
     const pathMap = new Map<string, { nodeId: string; unitSubtopicId: string }>();
     let processedQuestions = 0;
     let unmappedQuestions = 0;
-    const authClaims = null as import("../lib/jwt").AccessTokenPayload | null;
+    const dbAuthClaims = null as import("../lib/jwt").AccessTokenPayload | null;
     const persistQuestions = async (tx: any) => {
       for (let i = 0; i < questions.length; i++) {
         const q = questions[i];
@@ -2268,7 +2415,7 @@ async function performCheapImport(
     };
 
     if (isQuestionsOnlyImport) {
-      await withRequestDbContext(authClaims, async (tx) => {
+      await withRequestDbContext(dbAuthClaims, async (tx) => {
         const existingNodes = (await tx
           .select({
             id: nodesTable.id,
@@ -2309,7 +2456,7 @@ async function performCheapImport(
         await persistQuestions(tx);
       });
     } else {
-      await withRequestDbContext(authClaims, async (tx) => {
+      await withRequestDbContext(dbAuthClaims, async (tx) => {
         const existingNodes = await tx
           .select({ id: nodesTable.id })
           .from(nodesTable)
@@ -2907,7 +3054,7 @@ router.post("/configs/:id/cheap/replica-questions", requireAdmin, async (req, re
     const cleanQuestions = body.questions
       .map((q) => ({
         markType: q.markType,
-        question: stripMainQuestionNumber(String(q.question || "")),
+        question: stripReplicaPaperMetadata(String(q.question || "")),
         answer: String(q.answer || "").trim(),
         unitTitle: String(q.unitTitle || "").trim(),
         topicTitle: String(q.topicTitle || "").trim(),
