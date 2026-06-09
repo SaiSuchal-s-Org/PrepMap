@@ -819,6 +819,7 @@ export const generateCheapLaneA = async (
   payloadOptions?: {
     ignoreSavedReplica?: boolean;
     includeFactsInMasterPrompt?: boolean;
+    replicaAsIsPercentage?: number;
   },
   requestOptions?: RequestInit,
 ) => {
@@ -833,6 +834,7 @@ export const generateCheapLaneA = async (
       mode,
       ignoreSavedReplica: payloadOptions?.ignoreSavedReplica,
       includeFactsInMasterPrompt: payloadOptions?.includeFactsInMasterPrompt,
+      replicaAsIsPercentage: payloadOptions?.replicaAsIsPercentage,
     }),
   });
 };
@@ -864,6 +866,7 @@ export const importCheapLaneB = async (
   configId: string,
   payload: {
     forceOverwrite?: boolean;
+    replicaAsIsPercentage?: number;
     units: Array<{
       title: string;
       topics: Array<{
@@ -899,6 +902,7 @@ export const startCheapLaneBImport = async (
   configId: string,
   payload: {
     forceOverwrite?: boolean;
+    replicaAsIsPercentage?: number;
     units: Array<{
       title: string;
       topics: Array<{
@@ -1483,6 +1487,7 @@ export const useGenerateCheapLaneA = <
       mode: CheapGenerationMode;
       ignoreSavedReplica?: boolean;
       includeFactsInMasterPrompt?: boolean;
+      replicaAsIsPercentage?: number;
     },
     TContext
   >,
@@ -1495,12 +1500,13 @@ export const useGenerateCheapLaneA = <
       mode: CheapGenerationMode;
       ignoreSavedReplica?: boolean;
       includeFactsInMasterPrompt?: boolean;
+      replicaAsIsPercentage?: number;
     },
     TContext
   >({
     mutationKey: ["cheap-lane-a"],
-    mutationFn: ({ configId, mode, ignoreSavedReplica, includeFactsInMasterPrompt }) =>
-      generateCheapLaneA(configId, mode, { ignoreSavedReplica, includeFactsInMasterPrompt }),
+    mutationFn: ({ configId, mode, ignoreSavedReplica, includeFactsInMasterPrompt, replicaAsIsPercentage }) =>
+      generateCheapLaneA(configId, mode, { ignoreSavedReplica, includeFactsInMasterPrompt, replicaAsIsPercentage }),
     ...options,
   });
 };
@@ -1562,6 +1568,7 @@ export const useImportCheapLaneB = <
       configId: string;
       payload: {
         forceOverwrite?: boolean;
+        replicaAsIsPercentage?: number;
         units: Array<{
           title: string;
           topics: Array<{
@@ -1591,6 +1598,7 @@ export const useImportCheapLaneB = <
       configId: string;
       payload: {
         forceOverwrite?: boolean;
+        replicaAsIsPercentage?: number;
         units: Array<{
           title: string;
           topics: Array<{
