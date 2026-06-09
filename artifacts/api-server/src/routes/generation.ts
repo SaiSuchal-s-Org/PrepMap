@@ -135,6 +135,23 @@ function normalizeQuestionText(value: string): string {
   return normalizeText(String(value || "").trim());
 }
 
+function getBaseQuestionTargetForExam(exam: string): number {
+  const normalizedExam = String(exam || "").toLowerCase().trim();
+  return normalizedExam.startsWith("mid") ? 50 : 75;
+}
+
+function roundUpToNearestTen(value: number): number {
+  const n = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  return n === 0 ? 0 : Math.ceil(n / 10) * 10;
+}
+
+function getQuestionTargetForReplicaCount(baseTarget: number, replicaCount: number): number {
+  const safeBase = Math.max(0, Math.floor(baseTarget));
+  const safeReplicaCount = Math.max(0, Math.floor(replicaCount));
+  if (safeReplicaCount <= safeBase) return safeBase;
+  return roundUpToNearestTen(safeReplicaCount);
+}
+
 async function buildExplanationGapFilteredStructure(
   configId: string,
   structure: LaneAStructureUnit[],
@@ -1371,12 +1388,7 @@ router.post("/configs/:id/cheap/lane-a", requireAdmin, async (req, res) => {
 
     const totalQuestionTarget = isExplanationsOnly
       ? 0
-      : (() => {
-          const baseline = pkg.totalQuestionTarget;
-          const replicaCount = pkg.replicaQuestions.length;
-          if (replicaCount <= baseline) return baseline;
-          return Math.ceil(replicaCount / 10) * 10;
-        })();
+      : getQuestionTargetForReplicaCount(pkg.totalQuestionTarget, pkg.replicaQuestions.length);
     const replicaAsIsRatio = parseReplicaAsIsRatioFromRequest((req.body as any)?.replicaAsIsPercentage, 0.4);
     const mandatoryReplicaQuestions = isExplanationsOnly
       ? []
@@ -2300,9 +2312,7 @@ async function performCheapImport(
     const questions = isExplanationsOnlyImport ? [] : [...body.questions];
     if (!isExplanationsOnlyImport) {
       const baseline = pkg.totalQuestionTarget;
-      const replicaCap = pkg.replicaQuestions.length <= baseline
-        ? baseline
-        : Math.ceil(pkg.replicaQuestions.length / 10) * 10;
+      const replicaCap = getQuestionTargetForReplicaCount(baseline, pkg.replicaQuestions.length);
       const mandatoryReplicaQuestions = pkg.replicaQuestions.slice(0, replicaCap);
       const replicaAsIsRatio = parseReplicaAsIsRatioFromRequest((rawBody as any)?.replicaAsIsPercentage, 0.4);
       const allowedVerbatimReplicaCount = Math.floor(mandatoryReplicaQuestions.length * replicaAsIsRatio);
@@ -3070,7 +3080,11 @@ router.get("/configs/:id/cheap/gap-report", requireAdmin, async (req, res) => {
       return;
     }
 
-    const expectedQuestionCount = config.exam === "endsem" ? 75 : 50;
+    const savedReplicaQuestions = await loadSavedReplicaQuestions(id, authClaims);
+    const expectedQuestionCount = getQuestionTargetForReplicaCount(
+      getBaseQuestionTargetForExam(config.exam),
+      savedReplicaQuestions.length,
+    );
     const existingQuestionCount = includeQuestionGaps
       ? (await withRequestDbContext(authClaims, async (tx) =>
           tx

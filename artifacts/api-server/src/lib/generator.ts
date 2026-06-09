@@ -192,6 +192,7 @@ function getEnvNumber(name: string, fallback: number): number {
 const LOW_QUOTA_MODE = String(process.env.LOW_QUOTA_MODE || "").toLowerCase() === "true";
 const QUESTION_BATCH_SIZE = getEnvNumber("QUESTION_BATCH_SIZE", LOW_QUOTA_MODE ? 12 : 35);
 const QUESTION_MIN_BATCH_SIZE = getEnvNumber("QUESTION_MIN_BATCH_SIZE", LOW_QUOTA_MODE ? 6 : 10);
+const REPLICA_EXTRACTION_MAX_QUESTIONS = getEnvNumber("REPLICA_EXTRACTION_MAX_QUESTIONS", 500);
 
 function getTargetsForExam(exam: string): { totalQuestions: number; totalStars: number } {
   const normalizedExam = String(exam || "").toLowerCase().trim();
@@ -199,6 +200,11 @@ function getTargetsForExam(exam: string): { totalQuestions: number; totalStars: 
     return { totalQuestions: 50, totalStars: 20 };
   }
   return { totalQuestions: 75, totalStars: 25 };
+}
+
+function roundUpToNearestTen(value: number): number {
+  const n = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  return n === 0 ? 0 : Math.ceil(n / 10) * 10;
 }
 
 function normalizeText(value: string): string {
@@ -1268,7 +1274,7 @@ async function extractReplicaQuestions(
   maxQuestions: number
 ): Promise<{ questions: GeneratedQuestion[]; method: "model" | "none" }> {
   if (!paperText.trim()) return { questions: [], method: "none" };
-  const cappedMaxQuestions = Math.max(1, Math.min(200, Number.isFinite(maxQuestions) ? Math.floor(maxQuestions) : 50));
+  const cappedMaxQuestions = Math.max(1, Number.isFinite(maxQuestions) ? Math.floor(maxQuestions) : REPLICA_EXTRACTION_MAX_QUESTIONS);
   const paperForModel = paperText.slice(0, 52000);
 
   const buildExtractionPrompt = (textBlock: string, limit: number) => `Extract the COMPLETE mandatory question list from this replica exam paper for subject "${subject}".
@@ -1513,7 +1519,7 @@ export async function buildLaneAConfigPackage(configId: string): Promise<{
       paperText,
       catalog,
       config.subject,
-      targets.totalQuestions
+      REPLICA_EXTRACTION_MAX_QUESTIONS
     );
     replicaQuestions = extracted.questions
       .map((q) => ({ ...q, question: String(q.question || "").trim() }))
@@ -1765,14 +1771,18 @@ async function buildQuestionBank(
   totalQuestions: number,
   totalStars: number
 ): Promise<GeneratedQuestion[]> {
-  const TOTAL = totalQuestions;
+  let TOTAL = totalQuestions;
   let STAR_TARGET = Math.min(totalStars, TOTAL);
 
   let replica: GeneratedQuestion[] = [];
   try {
-    replica = (await extractReplicaQuestions(paperText, catalog, subject, TOTAL)).questions;
+    replica = (await extractReplicaQuestions(paperText, catalog, subject, REPLICA_EXTRACTION_MAX_QUESTIONS)).questions;
   } catch (err) {
     logger.warn({ err }, "Replica question extraction failed; continuing without replica questions");
+  }
+  if (replica.length > TOTAL) {
+    TOTAL = roundUpToNearestTen(replica.length);
+    STAR_TARGET = Math.max(totalStars, replica.filter((q) => q.isStarred).length);
   }
   if (replica.length === 0) {
     STAR_TARGET = 0;

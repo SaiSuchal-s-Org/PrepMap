@@ -10,3 +10,4 @@ export * from "./nodes";
 export * from "./configQuestions";
 export * from "./configReplicaQuestions";
 export * from "./events";
+export * from "./configConsolidatedStats";

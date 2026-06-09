@@ -13,7 +13,9 @@ import {
   useUpsertLibrarySubject,
   useSaveConfigUnitLinks,
   usePurgeConfig,
+  useConsolidateConfigStats,
   useCloneConfigToUniversity,
+  useGetConsolidatedConfigStats,
 } from "@/api-client";
 import { UNIVERSITIES, EXAM_TYPES, COMMON_BRANCH, SEMESTERS } from "@/lib/constants";
 import { useLocation } from "wouter";
@@ -602,8 +604,15 @@ function ConfigsTab() {
   const [examFilter, setExamFilter] = useState<string>("all");
   const [subjectFilter, setSubjectFilter] = useState<string>("all");
   const { data: configs, isLoading, refetch } = useGetConfigs({}, { query: { queryKey: ["configs", "all"] } });
+  const { data: consolidatedStatsForConfigs, refetch: refetchConsolidatedStatsForConfigs } = useGetConsolidatedConfigStats({
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const deleteConfig = useDeleteConfig();
   const purgeConfig = usePurgeConfig();
+  const consolidateConfigStats = useConsolidateConfigStats();
   const cloneConfig = useCloneConfigToUniversity();
   const enableConfig = useCreateConfig();
   const { toast } = useToast();
@@ -679,6 +688,10 @@ function ConfigsTab() {
 
   const activeConfigs = filteredConfigs.filter((c) => c.status !== "disabled");
   const disabledConfigs = filteredConfigs.filter((c) => c.status === "disabled");
+  const consolidatedConfigIdSet = useMemo(
+    () => new Set((consolidatedStatsForConfigs?.rows ?? []).map((row) => row.configId)),
+    [consolidatedStatsForConfigs]
+  );
 
   useEffect(() => {
     const syncFromSearch = () => {
@@ -1002,62 +1015,94 @@ function ConfigsTab() {
                       <p className="text-sm text-muted-foreground mb-3">
                         {uniLabel(config.universityId)} &middot; {config.branch} &middot; {configBatchLabel((config as any).batch)}
                       </p>
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-8 text-xs"
-                        disabled={enableConfig.isPending}
-                        onClick={() => {
-                          enableConfig.mutate(
-                            {
-                              data: {
-                                universityId: config.universityId,
-                                batch: String((config as any).batch || "").trim() || "2025",
-                                year: config.year,
-                                branch: config.branch,
-                                subject: config.subject,
-                                exam: config.exam as "mid1" | "mid2" | "endsem",
-                                reuseDisabledConfigId: config.id,
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-8 text-xs"
+                          disabled={enableConfig.isPending}
+                          onClick={() => {
+                            enableConfig.mutate(
+                              {
+                                data: {
+                                  universityId: config.universityId,
+                                  batch: String((config as any).batch || "").trim() || "2025",
+                                  year: config.year,
+                                  branch: config.branch,
+                                  subject: config.subject,
+                                  exam: config.exam as "mid1" | "mid2" | "endsem",
+                                  reuseDisabledConfigId: config.id,
+                                },
                               },
-                            },
-                            {
-                              onSuccess: () => {
-                                refetch();
-                                toast({
-                                  title: "Config enabled",
-                                  description: `${config.subject} has been enabled as draft.`,
-                                });
-                              },
-                              onError: () => {
-                                toast({
-                                  title: "Enable failed",
-                                  description: "Could not enable this config. Please try again.",
-                                  variant: "destructive",
-                                });
-                              },
-                            }
-                          );
-                        }}
-                      >
-                        Enable
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="destructive"
-                        className="h-8 text-xs ml-2"
-                        disabled={purgeConfig.isPending}
-                        onClick={() =>
-                          setPurgeTarget({
-                            id: config.id,
-                            subject: config.subject,
-                            year: config.year,
-                            exam: config.exam,
-                          })
-                        }
-                      >
-                        Delete
-                      </Button>
+                              {
+                                onSuccess: () => {
+                                  refetch();
+                                  toast({
+                                    title: "Config enabled",
+                                    description: `${config.subject} has been enabled as draft.`,
+                                  });
+                                },
+                                onError: () => {
+                                  toast({
+                                    title: "Enable failed",
+                                    description: "Could not enable this config. Please try again.",
+                                    variant: "destructive",
+                                  });
+                                },
+                              }
+                            );
+                          }}
+                        >
+                          Enable
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs"
+                          disabled={consolidateConfigStats.isPending || consolidatedConfigIdSet.has(config.id)}
+                          onClick={() => {
+                            consolidateConfigStats.mutate(
+                              { id: config.id },
+                              {
+                                onSuccess: () => {
+                                  refetchConsolidatedStatsForConfigs();
+                                  toast({
+                                    title: "Events consolidated",
+                                    description: `${config.subject} snapshot has been updated.`,
+                                  });
+                                },
+                                onError: () => {
+                                  toast({
+                                    title: "Consolidation failed",
+                                    description: "Could not consolidate events for this config.",
+                                    variant: "destructive",
+                                  });
+                                },
+                              }
+                            );
+                          }}
+                        >
+                          {consolidatedConfigIdSet.has(config.id) ? "Consolidated" : "Consolidate Events"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          className="h-8 text-xs"
+                          disabled={purgeConfig.isPending}
+                          onClick={() =>
+                            setPurgeTarget({
+                              id: config.id,
+                              subject: config.subject,
+                              year: config.year,
+                              exam: config.exam,
+                            })
+                          }
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </motion.div>
                   ))}
                 </AnimatePresence>
@@ -1354,6 +1399,18 @@ function AnalyticsTab() {
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
+  const {
+    data: consolidatedConfigStats,
+    isLoading: consolidatedLoading,
+    isError: consolidatedError,
+    refetch: refetchConsolidatedStats,
+  } = useGetConsolidatedConfigStats({
+    enabled: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const allConfigsSafe = useMemo(() => allConfigs ?? [], [allConfigs]);
   const studentCountByUniversity = useMemo(() => {
     const map = new Map<string, number>();
@@ -1372,6 +1429,7 @@ function AnalyticsTab() {
   );
   const [selectedUniversityId, setSelectedUniversityId] = useState<string | null>(null);
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(null);
+  const [showConsolidatedPage, setShowConsolidatedPage] = useState(false);
   const selectedUniversityRow = universityRows.find((row) => row.universityId === selectedUniversityId) ?? null;
   const selectedUniversityConfigs = selectedUniversityRow?.configs ?? [];
   const selectedConfig = selectedUniversityConfigs.find((cfg) => cfg.id === selectedConfigId) ?? null;
@@ -1499,6 +1557,14 @@ function AnalyticsTab() {
     }
     return map;
   }, [liveConfigQbSummary]);
+  const consolidatedRows = useMemo(
+    () => consolidatedConfigStats?.rows ?? [],
+    [consolidatedConfigStats]
+  );
+  const consolidatedConfigIds = useMemo(
+    () => new Set(consolidatedRows.map((row) => row.configId)),
+    [consolidatedRows]
+  );
   const { data: studentProgress, isLoading: studentsLoading } = useGetConfigStudentProgress(
     selectedConfigId,
     {
@@ -1626,7 +1692,113 @@ function AnalyticsTab() {
   }, [selectedConfigId]);
 
   return (
-    <div>
+    <div className="space-y-6">
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant={!showConsolidatedPage ? "default" : "outline"}
+          size="sm"
+          onClick={() => setShowConsolidatedPage(false)}
+        >
+          University Analytics
+        </Button>
+        <Button
+          type="button"
+          variant={showConsolidatedPage ? "default" : "outline"}
+          size="sm"
+          onClick={() => setShowConsolidatedPage(true)}
+        >
+          Consolidated Events
+        </Button>
+      </div>
+
+      {showConsolidatedPage ? (
+        <div className="bg-card rounded-3xl border border-border shadow-lg shadow-black/5 overflow-hidden">
+          <div className="px-6 py-5 border-b border-border bg-secondary/30 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Consolidated Events</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Snapshot rows created from the Consolidate Events action.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                refetchConsolidatedStats();
+              }}
+              disabled={consolidatedLoading}
+            >
+              {consolidatedLoading ? "Loading..." : "Fetch Consolidated Events"}
+            </Button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1300px] text-left border-collapse">
+              <thead>
+                <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="px-4 py-3 font-semibold">University</th>
+                  <th className="px-4 py-3 font-semibold">Subject</th>
+                  <th className="px-4 py-3 font-semibold">Semester</th>
+                  <th className="px-4 py-3 font-semibold">Exam</th>
+                  <th className="px-4 py-3 font-semibold">Batch</th>
+                  <th className="px-4 py-3 font-semibold">Branch</th>
+                  <th className="px-4 py-3 font-semibold text-right">Events</th>
+                  <th className="px-4 py-3 font-semibold text-right">Eligible</th>
+                  <th className="px-4 py-3 font-semibold text-right">Unique Content</th>
+                  <th className="px-4 py-3 font-semibold text-right">Unique QB</th>
+                  <th className="px-4 py-3 font-semibold text-right">Avg Content %</th>
+                  <th className="px-4 py-3 font-semibold text-right">Avg QB %</th>
+                  <th className="px-4 py-3 font-semibold text-right">Completed Both</th>
+                  <th className="px-4 py-3 font-semibold">Consolidated At</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/50 text-sm">
+                {consolidatedLoading ? (
+                  <tr>
+                    <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
+                      Loading consolidated stats...
+                    </td>
+                  </tr>
+                ) : consolidatedError ? (
+                  <tr>
+                    <td colSpan={14} className="px-4 py-8 text-center text-destructive">
+                      Failed to load consolidated config stats.
+                    </td>
+                  </tr>
+                ) : consolidatedRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
+                      Click "Fetch Consolidated Events" to load snapshot rows.
+                    </td>
+                  </tr>
+                ) : (
+                  consolidatedRows.map((row) => (
+                    <tr key={row.configId} className="hover:bg-muted/50 transition-colors">
+                      <td className="px-4 py-3 text-foreground">{uniLabel(row.universityId)}</td>
+                      <td className="px-4 py-3 font-medium text-foreground">{row.subject}</td>
+                      <td className="px-4 py-3 text-foreground">{semesterLabel(row.year)}</td>
+                      <td className="px-4 py-3 text-foreground">{examLabel(row.exam)}</td>
+                      <td className="px-4 py-3 text-foreground">{row.batch}</td>
+                      <td className="px-4 py-3 text-foreground">{row.branch}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-foreground">{row.totalEvents}</td>
+                      <td className="px-4 py-3 text-right text-foreground">{row.eligibleStudentCount}</td>
+                      <td className="px-4 py-3 text-right text-foreground">{row.uniqueStudentsContent}</td>
+                      <td className="px-4 py-3 text-right text-foreground">{row.uniqueStudentsQb}</td>
+                      <td className="px-4 py-3 text-right text-foreground">{Math.round(row.avgContentConsumptionPct)}%</td>
+                      <td className="px-4 py-3 text-right text-foreground">{Math.round(row.avgQbConsumptionPct)}%</td>
+                      <td className="px-4 py-3 text-right text-foreground">{row.studentsCompletedBoth}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {row.consolidatedAt ? new Date(row.consolidatedAt).toLocaleString() : "-"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="bg-card rounded-3xl border border-border shadow-lg shadow-black/5 overflow-hidden">
         <div className="px-6 py-5 border-b border-border bg-secondary/30">
           <h2 className="text-lg font-semibold text-foreground">Detailed Analytics By University</h2>
@@ -1836,7 +2008,19 @@ function AnalyticsTab() {
                             statusRows.push(
                               <tr key={cfg.id}>
                                 <td className="px-4 py-3 pl-12 text-muted-foreground">{examLabel(examGroup.examId)}</td>
-                                <td className="px-4 py-3 font-medium text-foreground">{cfg.subject}</td>
+                                <td className="px-4 py-3 font-medium text-foreground">
+                                  <div className="inline-flex items-center gap-2">
+                                    <span>{cfg.subject}</span>
+                                    {consolidatedConfigIds.has(cfg.id) && (
+                                      <Badge
+                                        variant="outline"
+                                        className="text-[10px] uppercase tracking-wide border-red-300 text-red-700 bg-red-50"
+                                      >
+                                        Consolidated
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </td>
                                 <td className="px-4 py-3 text-foreground">{semesterLabel(cfg.year)}</td>
                                 <td className="px-4 py-3 text-foreground">{examLabel(cfg.exam)}</td>
                                 <td className="px-4 py-3 text-foreground">
@@ -2138,6 +2322,8 @@ function AnalyticsTab() {
           </div>
         </DialogContent>
       </Dialog>
+        </>
+      )}
     </div>
   );
 }
