@@ -909,7 +909,7 @@ async function extractSyllabusText(config: {
   throw new Error("Could not extract text from syllabus file");
 }
 
-async function extractPaperText(paperFileUrls: string[]): Promise<string> {
+export async function extractPaperText(paperFileUrls: string[]): Promise<string> {
   const texts: string[] = [];
   let pdfWithNoTextCount = 0;
   let failedCount = 0;
