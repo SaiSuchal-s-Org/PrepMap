@@ -10,6 +10,7 @@ import generationRouter from "./generation";
 import storageRouter from "./storage";
 import metadataRouter from "./metadata";
 import libraryRouter from "./library";
+import quickPracticeRouter from "./quickPractice";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use(generationRouter);
 router.use(storageRouter);
 router.use(metadataRouter);
 router.use(libraryRouter);
+router.use(quickPracticeRouter);
 
 export default router;
